@@ -18,19 +18,19 @@ def _setup_logging(level: str = "INFO") -> None:
     )
 
 
+def _run_application(application: Application) -> None:
+    try:
+        asyncio.run(application.run())
+    except KeyboardInterrupt:
+        pass
+
+
 @app.command()
 def run(config: str = "config.yaml") -> None:
     """Start all enabled adapters."""
     application = Application(config_path=config)
     _setup_logging(application._config.get("log_level", "INFO"))
-
-    async def _run() -> None:
-        try:
-            await application.run()
-        except KeyboardInterrupt:
-            await application.stop()
-
-    asyncio.run(_run())
+    _run_application(application)
 
 
 @app.command()
@@ -41,11 +41,4 @@ def chat(config: str = "config.yaml") -> None:
 
     cli_adapter = CliAdapter({}, application._bus)
     application.add_adapter(cli_adapter)
-
-    async def _run() -> None:
-        try:
-            await application.run()
-        except KeyboardInterrupt:
-            await application.stop()
-
-    asyncio.run(_run())
+    _run_application(application)

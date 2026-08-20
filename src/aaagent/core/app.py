@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,17 @@ from aaagent.providers.base import LLMProvider, PROVIDER_TYPE_REGISTRY
 from aaagent.providers.openai import OpenAICompatibleProvider
 
 logger = logging.getLogger("aaagent")
+
+_THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    """Remove <think>...</think> / <thinking>...</thinking> blocks from LLM output."""
+    if not text:
+        return text
+    cleaned = _THINK_RE.sub("", text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 ADAPTER_REGISTRY: dict[str, type[IMAdapter]] = {
     "cli": CliAdapter,
@@ -124,6 +136,7 @@ class Application:
 
         try:
             reply = await self._provider.chat(context)
+            reply = _strip_think(reply)
         except Exception as e:
             logger.error("LLM call failed: %s", e)
             reply = f"[Error] LLM call failed: {e}"
@@ -160,9 +173,15 @@ class Application:
             logger.error("No adapters configured, nothing to run")
             return
 
-        tasks = [adapter.start() for adapter in self._adapters]
-        await asyncio.gather(*tasks)
+        try:
+            tasks = [adapter.start() for adapter in self._adapters]
+            await asyncio.gather(*tasks)
+        finally:
+            await self.stop()
 
     async def stop(self) -> None:
         for adapter in self._adapters:
-            await adapter.stop()
+            try:
+                await adapter.stop()
+            except Exception as e:
+                logger.error("Error stopping adapter %s: %s", type(adapter).__name__, e)

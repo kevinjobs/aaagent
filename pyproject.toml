@@ -9,6 +9,8 @@ dependencies = [
     "openai>=1.30",
     "rich>=13.0",
     "python-dotenv>=1.0",
+    "httpx>=0.27",
+    "websockets>=12",
 ]
 
 [project.scripts]
