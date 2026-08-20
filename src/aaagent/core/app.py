@@ -15,11 +15,13 @@ from aaagent.adapters.cli_adapter import CliAdapter
 from aaagent.adapters.feishu import FeishuAdapter
 from aaagent.adapters.wechat import WechatAdapter
 from aaagent.core.bus import EventBus
+from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
 from aaagent.core.session import SessionStore
 from aaagent.providers.base import LLMProvider, PROVIDER_TYPE_REGISTRY
 from aaagent.providers.openai import OpenAICompatibleProvider
 from aaagent.tools.file_tools import register_file_tools
+from aaagent.tools.memory_tools import register_memory_tools
 from aaagent.tools.registry import ToolRegistry
 from aaagent.tools.shell_tools import register_shell_tools
 
@@ -89,6 +91,9 @@ class Application:
         self._adapters: list[IMAdapter] = []
         self._providers: dict[str, LLMProvider] = {}
         self._provider: LLMProvider | None = None
+        self._memory = MemoryStore(
+            data_dir=self._config.get("memory", {}).get("data_dir", "data/memories"),
+        )
         self._tool_registry = self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
         self._setup()
@@ -108,10 +113,15 @@ class Application:
         else:
             allowed_dirs = [str(Path(d).resolve()) for d in allowed_dirs]
 
+        memory_enabled = self._config.get("memory", {}).get("enabled", True)
+
         registry = ToolRegistry(allowed_dirs=allowed_dirs)
         register_file_tools(registry)
         if tools_cfg.get("shell", {}).get("enabled", True):
             register_shell_tools(registry)
+        if memory_enabled:
+            set_store = register_memory_tools(registry)
+            set_store(self._memory)
         logger.info(
             "Tool registry initialized with %d tools, allowed_dirs=%s",
             len(registry.tool_names),
@@ -169,6 +179,9 @@ class Application:
         await self._session_store.add_message(msg.session_id, msg)
 
         context = await self._session_store.get_context(msg.session_id)
+        profile = await self._memory.recall_profile()
+        if profile:
+            context.insert(1, {"role": "system", "content": f"## 用户画像（知道的信息）\n\n{profile}\n\n注意：用户画像仅供参考，不一定是当前用户的最新情况，请通过 recall 工具获取最新信息。"})
 
         try:
             reply_text = await self._run_tool_loop(
@@ -190,6 +203,7 @@ class Application:
 
         await self._session_store.add_message(msg.session_id, reply_msg)
         await self._session_store.maybe_compress(msg.session_id, self._provider)
+        await self._memory.maybe_consolidate_profile(self._provider)
 
         await self._bus.emit("message_to_send", reply_msg)
 
@@ -307,6 +321,7 @@ class Application:
             await self.stop()
 
     async def stop(self) -> None:
+        await self._memory.close()
         for adapter in self._adapters:
             try:
                 await adapter.stop()
