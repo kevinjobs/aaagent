@@ -72,7 +72,11 @@ def _resolve_provider(name: str, cfg: dict[str, Any]) -> LLMProvider | None:
 
 
 class Application:
-    def __init__(self, config_path: str = "config.yaml") -> None:
+    def __init__(
+        self,
+        config_path: str = "config.yaml",
+        enabled_adapters: list[str] | None = None,
+    ) -> None:
         from dotenv import load_dotenv
         load_dotenv()
         self._config = self._load_config(config_path)
@@ -80,11 +84,13 @@ class Application:
         self._session_store = SessionStore(
             max_history=self._config.get("session", {}).get("max_history", 20),
             compress_threshold=self._config.get("session", {}).get("compress_threshold", 0.8),
+            system_prompt=self._config.get("system_prompt", ""),
         )
         self._adapters: list[IMAdapter] = []
         self._providers: dict[str, LLMProvider] = {}
         self._provider: LLMProvider | None = None
         self._tool_registry = self._setup_tool_registry()
+        self._enabled_adapters = enabled_adapters
         self._setup()
 
     def _load_config(self, path: str) -> dict[str, Any]:
@@ -141,6 +147,8 @@ class Application:
         adapters_cfg = self._config.get("adapters", {})
         for name, cfg in adapters_cfg.items():
             if not cfg.get("enabled", False):
+                continue
+            if self._enabled_adapters is not None and name not in self._enabled_adapters:
                 continue
             cls = ADAPTER_REGISTRY.get(name)
             if cls is None:

@@ -21,6 +21,7 @@ class Session:
     max_history: int = 20
     compress_threshold: float = 0.8
     last_activity: float = field(default_factory=time.time)
+    system_prompt: str = ""
 
     @property
     def keep_after_compress(self) -> int:
@@ -61,6 +62,8 @@ class Session:
 
     def get_context(self) -> list[dict[str, str]]:
         context: list[dict[str, str]] = []
+        if self.system_prompt:
+            context.append({"role": "system", "content": self.system_prompt})
         if self.summary:
             context.append({"role": "system", "content": f"对话历史摘要：{self.summary}"})
         context.extend(m.to_llm_dict() for m in self.messages)
@@ -73,11 +76,13 @@ class SessionStore:
         max_history: int = 20,
         compress_threshold: float = 0.8,
         max_sessions: int = 1000,
+        system_prompt: str = "",
     ) -> None:
         self._sessions: dict[str, Session] = {}
         self._max_history = max_history
         self._compress_threshold = compress_threshold
         self._max_sessions = max(1, max_sessions)
+        self._system_prompt = system_prompt
         self._locks: dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
@@ -109,6 +114,7 @@ class SessionStore:
                 chat_id=chat_id,
                 max_history=self._max_history,
                 compress_threshold=self._compress_threshold,
+                system_prompt=self._system_prompt,
             )
             self._sessions[session_id] = session
             self._evict_lru()

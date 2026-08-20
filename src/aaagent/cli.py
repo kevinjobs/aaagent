@@ -43,18 +43,33 @@ def _run_application(application: Application) -> None:
 
 
 @app.command()
+def _read_log_level(config_path: str) -> str:
+    try:
+        import yaml
+        from pathlib import Path
+        p = Path(config_path)
+        if p.exists():
+            with open(p, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            return cfg.get("log_level", "INFO")
+    except Exception:
+        pass
+    return "INFO"
+
+
+@app.command()
 def run(config: str = "config.yaml") -> None:
     """Start all enabled adapters."""
+    _setup_logging(_read_log_level(config))
     application = Application(config_path=config)
-    _setup_logging(application._config.get("log_level", "INFO"))
     _run_application(application)
 
 
 @app.command()
 def chat(config: str = "config.yaml") -> None:
     """Start CLI chat mode for testing."""
-    application = Application(config_path=config)
-    _setup_logging(application._config.get("log_level", "INFO"))
+    _setup_logging(_read_log_level(config))
+    application = Application(config_path=config, enabled_adapters=[])
 
     cli_adapter = CliAdapter({}, application._bus)
     application.add_adapter(cli_adapter)
