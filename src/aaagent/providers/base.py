@@ -1,7 +1,21 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass
+class ChatResponse:
+    content: str = ""
+    tool_calls: list[ToolCall] | None = None
 
 
 class LLMProvider(ABC):
@@ -12,7 +26,12 @@ class LLMProvider(ABC):
         self.config = config
 
     @abstractmethod
-    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str: ...
+    async def chat(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> ChatResponse: ...
 
 
 PROVIDER_TYPE_REGISTRY: dict[str, type[LLMProvider]] = {}

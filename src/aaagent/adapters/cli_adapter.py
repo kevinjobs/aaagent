@@ -6,6 +6,7 @@ from typing import Any
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
 
 from aaagent.adapters.base import IMAdapter
@@ -24,6 +25,8 @@ class CliAdapter(IMAdapter):
         self._user_id = "cli-user"
         self._bus = bus
         self._bus.on("message_to_send", self._on_message_to_send)
+        self._bus.on("tool_start", self._on_tool_start)
+        self._bus.on("tool_result", self._on_tool_result)
 
     async def start(self) -> None:
         self._running = True
@@ -41,6 +44,53 @@ class CliAdapter(IMAdapter):
     async def _on_message_to_send(self, msg: Message) -> None:
         if msg.platform == "cli":
             self._print_assistant(msg.content)
+
+    async def _on_tool_start(self, data: dict[str, Any]) -> None:
+        if data.get("platform") != "cli":
+            return
+        turn = data["turn"]
+        for tc in data["tool_calls"]:
+            try:
+                import json
+                args = json.loads(tc.arguments)
+            except (json.JSONDecodeError, TypeError):
+                args = tc.arguments
+            self._console.print(
+                Panel(
+                    f"[bold yellow]🔧 {tc.name}[/bold yellow]\n\n{args}",
+                    border_style="yellow",
+                    title=f"Tool Call (turn {turn})",
+                    title_align="left",
+                )
+            )
+
+    async def _on_tool_result(self, data: dict[str, Any]) -> None:
+        if data.get("platform") != "cli":
+            return
+        result = data["result"]
+        is_error = result.startswith("Error:")
+        style = "red" if is_error else "green"
+        label = f"Result ({data['tool_name']})"
+        content = result[:2000]
+
+        if len(content) > 500 and not is_error:
+            self._console.print(
+                Panel(
+                    Syntax(content, "text", theme="monokai", word_wrap=True),
+                    border_style=style,
+                    title=label,
+                    title_align="left",
+                )
+            )
+        else:
+            self._console.print(
+                Panel(
+                    content,
+                    border_style=style,
+                    title=label,
+                    title_align="left",
+                )
+            )
 
     async def _read_loop(self) -> None:
         loop = asyncio.get_event_loop()

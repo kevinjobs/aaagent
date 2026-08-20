@@ -29,6 +29,10 @@ class Session:
     def needs_compress(self) -> bool:
         return len(self.messages) > self.max_history
 
+    @staticmethod
+    def _is_tool_message(m: Message) -> bool:
+        return m.role == "tool" or (m.role == "assistant" and m.tool_calls)
+
     async def compress(self, provider: LLMProvider) -> None:
         if len(self.messages) <= self.max_history:
             return
@@ -38,7 +42,13 @@ class Session:
         if not old:
             return
 
-        conversation = "\n".join(f"{m.role}: {m.content}" for m in old)
+        text_messages = [m for m in old if not self._is_tool_message(m)]
+        if not text_messages:
+            self.messages = self.messages[len(old) :]
+            self.last_activity = time.time()
+            return
+
+        conversation = "\n".join(f"{m.role}: {m.content}" for m in text_messages)
         existing = f"之前的对话摘要：{self.summary}\n\n" if self.summary else ""
         prompt = (
             f"{existing}请将以下对话历史总结为一段简洁的摘要，"

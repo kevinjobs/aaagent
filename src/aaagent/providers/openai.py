@@ -6,7 +6,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from aaagent.providers.base import LLMProvider, register_provider_type
+from aaagent.providers.base import ChatResponse, LLMProvider, ToolCall, register_provider_type
 
 logger = logging.getLogger("aaagent.provider")
 
@@ -36,11 +36,32 @@ class OpenAICompatibleProvider(LLMProvider):
             self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
         return self._client
 
-    async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
+    async def chat(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> ChatResponse:
         client = self._get_client()
+        kwargs.pop("tools", None)
         response = await client.chat.completions.create(
             model=self._model,
             messages=messages,
+            tools=tools,
             **kwargs,
         )
-        return response.choices[0].message.content or ""
+        choice = response.choices[0]
+        msg = choice.message
+
+        tool_calls: list[ToolCall] | None = None
+        if msg.tool_calls:
+            tool_calls = [
+                ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=tc.function.arguments,
+                )
+                for tc in msg.tool_calls
+            ]
+
+        return ChatResponse(content=msg.content or "", tool_calls=tool_calls)

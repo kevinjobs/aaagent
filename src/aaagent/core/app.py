@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import re
 from pathlib import Path
@@ -18,26 +19,26 @@ from aaagent.core.message import Message
 from aaagent.core.session import SessionStore
 from aaagent.providers.base import LLMProvider, PROVIDER_TYPE_REGISTRY
 from aaagent.providers.openai import OpenAICompatibleProvider
+from aaagent.tools.file_tools import register_file_tools
+from aaagent.tools.registry import ToolRegistry
+from aaagent.tools.shell_tools import register_shell_tools
 
 logger = logging.getLogger("aaagent")
 
 _THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
 _UNCLOSED_THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
 _PUBLIC_ERROR = "服务暂时不可用，请稍后再试。"
+_MAX_TOOL_TURNS = 20
 
 
 def _strip_think(text: str) -> str:
-    """Remove <think>...</think> / <thinking>...</thinking> blocks from LLM output.
-
-    Also strips orphan (unclosed) thinking tags to avoid leaking partial
-    reasoning when the model output is malformed.
-    """
     if not text:
         return text
     cleaned = _THINK_RE.sub("", text)
     cleaned = _UNCLOSED_THINK_RE.sub("", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
 
 ADAPTER_REGISTRY: dict[str, type[IMAdapter]] = {
     "cli": CliAdapter,
@@ -83,6 +84,7 @@ class Application:
         self._adapters: list[IMAdapter] = []
         self._providers: dict[str, LLMProvider] = {}
         self._provider: LLMProvider | None = None
+        self._tool_registry = self._setup_tool_registry()
         self._setup()
 
     def _load_config(self, path: str) -> dict[str, Any]:
@@ -91,6 +93,25 @@ class Application:
             with open(p, encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         return {}
+
+    def _setup_tool_registry(self) -> ToolRegistry:
+        tools_cfg = self._config.get("tools", {})
+        allowed_dirs = tools_cfg.get("allowed_dirs", None)
+        if allowed_dirs is None:
+            allowed_dirs = [str(Path.cwd())]
+        else:
+            allowed_dirs = [str(Path(d).resolve()) for d in allowed_dirs]
+
+        registry = ToolRegistry(allowed_dirs=allowed_dirs)
+        register_file_tools(registry)
+        if tools_cfg.get("shell", {}).get("enabled", True):
+            register_shell_tools(registry)
+        logger.info(
+            "Tool registry initialized with %d tools, allowed_dirs=%s",
+            len(registry.tool_names),
+            allowed_dirs,
+        )
+        return registry
 
     def _setup(self) -> None:
         self._setup_providers()
@@ -142,18 +163,20 @@ class Application:
         context = await self._session_store.get_context(msg.session_id)
 
         try:
-            reply = await self._provider.chat(context)
-            reply = _strip_think(reply)
+            reply_text = await self._run_tool_loop(
+                msg.session_id, msg.platform, msg.chat_id, context
+            )
+            reply_text = _strip_think(reply_text)
         except Exception as e:
             logger.error("LLM call failed for session %s: %s", msg.session_id, e, exc_info=True)
-            reply = _PUBLIC_ERROR
+            reply_text = _PUBLIC_ERROR
 
         reply_msg = Message(
             session_id=msg.session_id,
             platform=msg.platform,
             chat_id=msg.chat_id,
             user_id="assistant",
-            content=reply,
+            content=reply_text,
             role="assistant",
         )
 
@@ -161,6 +184,95 @@ class Application:
         await self._session_store.maybe_compress(msg.session_id, self._provider)
 
         await self._bus.emit("message_to_send", reply_msg)
+
+    async def _run_tool_loop(
+        self,
+        session_id: str,
+        platform: str,
+        chat_id: str,
+        messages: list[dict[str, Any]],
+    ) -> str:
+        tools = self._tool_registry.definitions
+        if not tools:
+            result = await self._provider.chat(messages)
+            return result.content
+
+        for turn in range(1, _MAX_TOOL_TURNS + 1):
+            result = await self._provider.chat(messages, tools=tools)
+
+            if not result.tool_calls:
+                return result.content
+
+            tool_role_msg: dict[str, Any] = {"role": "assistant", "content": result.content or None}
+            tool_calls_dicts: list[dict[str, Any]] = []
+            for tc in result.tool_calls:
+                tool_calls_dicts.append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                })
+            tool_role_msg["tool_calls"] = tool_calls_dicts
+            messages.append(tool_role_msg)
+
+            await self._bus.emit(
+                "tool_start",
+                {
+                    "session_id": session_id,
+                    "platform": platform,
+                    "chat_id": chat_id,
+                    "tool_calls": result.tool_calls,
+                    "turn": turn,
+                },
+            )
+
+            for tc in result.tool_calls:
+                output = await self._tool_registry.execute(tc.name, tc.arguments)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": output,
+                })
+
+                await self._bus.emit(
+                    "tool_result",
+                    {
+                        "session_id": session_id,
+                        "platform": platform,
+                        "chat_id": chat_id,
+                        "tool_call_id": tc.id,
+                        "tool_name": tc.name,
+                        "arguments": tc.arguments,
+                        "result": output,
+                        "turn": turn,
+                    },
+                )
+
+            msg = Message(
+                session_id=session_id,
+                platform=platform,
+                chat_id=chat_id,
+                user_id="assistant",
+                content=result.content,
+                role="assistant",
+                tool_calls=tool_calls_dicts,
+            )
+            await self._session_store.add_message(session_id, msg)
+
+            for tc in result.tool_calls:
+                tool_msg = Message(
+                    session_id=session_id,
+                    platform=platform,
+                    chat_id=chat_id,
+                    user_id="system",
+                    content=tc.arguments,
+                    role="tool",
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                )
+                await self._session_store.add_message(session_id, tool_msg)
+
+        logger.warning("Tool loop exceeded max turns (%d) for session %s", _MAX_TOOL_TURNS, session_id)
+        return "已达到最大工具调用次数。"
 
     def add_adapter(self, adapter: IMAdapter) -> None:
         self._adapters.append(adapter)

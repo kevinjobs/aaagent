@@ -17,6 +17,18 @@ class Message:
     role: str = "user"
     raw: Any = None
     timestamp: float = field(default_factory=time.time)
+    tool_call_id: str = ""
+    name: str = ""
+    tool_calls: list[dict[str, Any]] | None = None
 
-    def to_llm_dict(self) -> dict[str, str]:
-        return {"role": self.role, "content": self.content}
+    def to_llm_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"role": self.role}
+        if self.role == "tool":
+            d["tool_call_id"] = self.tool_call_id
+            d["content"] = self.content
+        elif self.tool_calls:
+            d["content"] = self.content or None
+            d["tool_calls"] = self.tool_calls
+        else:
+            d["content"] = self.content
+        return d
