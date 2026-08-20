@@ -22,7 +22,3 @@ class IMAdapter(ABC):
 
     @abstractmethod
     async def send(self, msg: Message) -> None: ...
-
-    def _emit_received(self, msg: Message) -> None:
-        import asyncio
-        asyncio.create_task(self.bus.emit("message_received", msg))

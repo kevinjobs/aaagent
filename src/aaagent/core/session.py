@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -18,32 +20,34 @@ class Session:
     summary: str | None = None
     max_history: int = 20
     compress_threshold: float = 0.8
+    last_activity: float = field(default_factory=time.time)
 
     @property
-    def _compress_limit(self) -> int:
-        return int(self.max_history * self.compress_threshold)
+    def keep_after_compress(self) -> int:
+        return max(1, int(self.max_history * self.compress_threshold))
 
     def needs_compress(self) -> bool:
-        return len(self.messages) >= self._compress_limit
+        return len(self.messages) > self.max_history
 
     async def compress(self, provider: LLMProvider) -> None:
-        if len(self.messages) < 2:
+        if len(self.messages) <= self.max_history:
             return
 
-        old_messages = self.messages[: -self._compress_limit] if self._compress_limit > 0 else self.messages
-        if not old_messages:
+        keep = self.keep_after_compress
+        old = self.messages[: len(self.messages) - keep]
+        if not old:
             return
 
-        conversation = "\n".join(f"{m.role}: {m.content}" for m in old_messages)
+        conversation = "\n".join(f"{m.role}: {m.content}" for m in old)
         existing = f"之前的对话摘要：{self.summary}\n\n" if self.summary else ""
-
         prompt = (
             f"{existing}请将以下对话历史总结为一段简洁的摘要，"
             f"保留关键信息和上下文：\n\n{conversation}"
         )
 
         self.summary = await provider.chat([{"role": "user", "content": prompt}])
-        self.messages = self.messages[len(old_messages):]
+        self.messages = self.messages[len(old) :]
+        self.last_activity = time.time()
 
     def get_context(self) -> list[dict[str, str]]:
         context: list[dict[str, str]] = []
@@ -54,37 +58,73 @@ class Session:
 
 
 class SessionStore:
-    def __init__(self, max_history: int = 20, compress_threshold: float = 0.8) -> None:
+    def __init__(
+        self,
+        max_history: int = 20,
+        compress_threshold: float = 0.8,
+        max_sessions: int = 1000,
+    ) -> None:
         self._sessions: dict[str, Session] = {}
         self._max_history = max_history
         self._compress_threshold = compress_threshold
+        self._max_sessions = max(1, max_sessions)
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _get_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[session_id] = lock
+        return lock
+
+    def _evict_lru(self) -> None:
+        if len(self._sessions) <= self._max_sessions:
+            return
+        overflow = len(self._sessions) - self._max_sessions
+        oldest = sorted(
+            self._sessions.items(), key=lambda kv: kv[1].last_activity
+        )[:overflow]
+        for sid, _ in oldest:
+            self._sessions.pop(sid, None)
+            self._locks.pop(sid, None)
 
     def get_or_create(
         self, session_id: str, platform: str = "", chat_id: str = ""
     ) -> Session:
-        if session_id not in self._sessions:
-            self._sessions[session_id] = Session(
+        session = self._sessions.get(session_id)
+        if session is None:
+            session = Session(
                 id=session_id,
                 platform=platform,
                 chat_id=chat_id,
                 max_history=self._max_history,
                 compress_threshold=self._compress_threshold,
             )
-        return self._sessions[session_id]
-
-    async def add_message(self, session_id: str, msg: Message) -> Session:
-        session = self.get_or_create(session_id, msg.platform, msg.chat_id)
-        session.messages.append(msg)
+            self._sessions[session_id] = session
+            self._evict_lru()
         return session
 
+    async def add_message(self, session_id: str, msg: Message) -> Session:
+        async with self._get_lock(session_id):
+            session = self.get_or_create(session_id, msg.platform, msg.chat_id)
+            session.messages.append(msg)
+            session.last_activity = time.time()
+            return session
+
     async def get_context(self, session_id: str) -> list[dict[str, str]]:
-        session = self.get_or_create(session_id)
-        return session.get_context()
+        async with self._get_lock(session_id):
+            session = self.get_or_create(session_id)
+            return session.get_context()
 
     async def maybe_compress(self, session_id: str, provider: LLMProvider) -> None:
-        session = self.get_or_create(session_id)
-        if session.needs_compress():
-            await session.compress(provider)
+        async with self._get_lock(session_id):
+            session = self.get_or_create(session_id)
+            if session.needs_compress():
+                await session.compress(provider)
 
     def list_sessions(self) -> list[Session]:
         return list(self._sessions.values())
+
+    @property
+    def max_sessions(self) -> int:
+        return self._max_sessions

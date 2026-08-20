@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 dist/
 *.egg-info/
+.codegraph/
+.pytest_cache/
+.coverage
+htmlcov/

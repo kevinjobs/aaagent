@@ -4,8 +4,10 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import time
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -22,6 +24,20 @@ GEN_ENDPOINT_URI = "/callback/ws/endpoint"
 SEND_MESSAGE_URI = "/open-apis/im/v1/messages"
 TENANT_TOKEN_URI = "/open-apis/auth/v3/tenant_access_token/internal"
 
+HTTP_TIMEOUT = 10.0
+MAX_FEISHU_MSG_LEN = 4000
+SEND_MAX_RETRIES = 3
+SEEN_MESSAGES_CAP = 10000
+WS_BACKOFF_BASE = 1.0
+WS_BACKOFF_MAX = 60.0
+
+
+def _resolve_env(value: str) -> str:
+    """Expand ${ENV_VAR} placeholders from the environment."""
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        return os.environ.get(value[2:-1], "")
+    return value or ""
+
 
 class FeishuAdapter(IMAdapter):
     name = "feishu"
@@ -29,40 +45,72 @@ class FeishuAdapter(IMAdapter):
     def __init__(self, config: dict[str, Any], bus: EventBus) -> None:
         super().__init__(config, bus)
 
-        app_id = config.get("app_id", "")
-        if app_id.startswith("${") and app_id.endswith("}"):
-            app_id = os.environ.get(app_id[2:-1], "")
-
-        app_secret = config.get("app_secret", "")
-        if app_secret.startswith("${") and app_secret.endswith("}"):
-            app_secret = os.environ.get(app_secret[2:-1], "")
+        app_id = _resolve_env(config.get("app_id", ""))
+        app_secret = _resolve_env(config.get("app_secret", ""))
 
         self._app_id = app_id
         self._app_secret = app_secret
         self._domain = config.get("domain", FEISHU_DOMAIN).rstrip("/")
         self._running = False
         self._stop_event = asyncio.Event()
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._ws_task: asyncio.Task | None = None
         self._tenant_token: str = ""
         self._token_expire_at: float = 0.0
+        self._http: httpx.AsyncClient | None = None
+        self._seen_messages: OrderedDict[str, float] = OrderedDict()
+
+        if not app_id or not app_secret:
+            logger.warning(
+                "Feishu adapter misconfigured (app_id=%s, app_secret=%s); "
+                "start() will be a no-op. Set FEISHU_APP_ID and "
+                "FEISHU_APP_SECRET in your environment.",
+                bool(app_id),
+                bool(app_secret),
+            )
 
         self.bus.on("message_to_send", self._on_message_to_send)
 
+    async def _get_http(self) -> httpx.AsyncClient:
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
+        return self._http
+
+    async def _close_http(self) -> None:
+        if self._http and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
+
+    def _remember_message(self, message_id: str) -> bool:
+        """Return True if new (should process), False if duplicate."""
+        if not message_id:
+            return True
+        if message_id in self._seen_messages:
+            return False
+        self._seen_messages[message_id] = time.time()
+        if len(self._seen_messages) > SEEN_MESSAGES_CAP:
+            self._seen_messages.popitem(last=False)
+        return True
+
     async def start(self) -> None:
         if not self._app_id or not self._app_secret:
-            logger.error("Feishu app_id or app_secret not configured")
+            logger.error("Feishu adapter not started: missing app credentials")
             return
 
         self._running = True
         self._stop_event.clear()
-        self._loop = asyncio.get_running_loop()
 
-        await self._refresh_tenant_token()
+        try:
+            await self._refresh_tenant_token()
+        except Exception as e:
+            logger.error("Initial Feishu token refresh failed: %s", e)
+            return
+
+        if not self._tenant_token:
+            logger.error("Feishu tenant token unavailable; adapter not started")
+            return
 
         logger.info("Feishu adapter started, waiting for messages...")
         self._ws_task = asyncio.create_task(self._ws_loop())
-        logger.debug("Feishu ws_task created: %s", self._ws_task)
 
         try:
             await self._stop_event.wait()
@@ -80,11 +128,23 @@ class FeishuAdapter(IMAdapter):
                 await self._ws_task
             except asyncio.CancelledError:
                 pass
+        await self._close_http()
         logger.info("Feishu adapter stopped")
 
     async def stop(self) -> None:
         self._running = False
         self._stop_event.set()
+
+    @staticmethod
+    def _truncate_for_feishu(content: str) -> str:
+        if len(content) <= MAX_FEISHU_MSG_LEN:
+            return content
+        logger.warning(
+            "Feishu message too long (%d bytes), truncating to %d",
+            len(content),
+            MAX_FEISHU_MSG_LEN,
+        )
+        return content[:MAX_FEISHU_MSG_LEN]
 
     async def send(self, msg: Message) -> None:
         chat_id = msg.chat_id
@@ -92,40 +152,59 @@ class FeishuAdapter(IMAdapter):
             logger.error("Cannot send Feishu message: missing chat_id")
             return
 
-        await self._ensure_token()
-        if not self._tenant_token:
-            logger.error("Feishu tenant token unavailable")
-            return
-
-        content = json.dumps({"text": msg.content})
+        content = self._truncate_for_feishu(msg.content)
         body = {
             "receive_id": chat_id,
             "msg_type": "text",
-            "content": content,
+            "content": json.dumps({"text": content}),
         }
         params = {"receive_id_type": "chat_id"}
-        headers = {
-            "Authorization": f"Bearer {self._tenant_token}",
-            "Content-Type": "application/json; charset=utf-8",
-        }
 
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
+        for attempt in range(SEND_MAX_RETRIES):
+            try:
+                await self._ensure_token()
+                if not self._tenant_token:
+                    return
+
+                client = await self._get_http()
                 resp = await client.post(
                     f"{self._domain}{SEND_MESSAGE_URI}",
                     params=params,
-                    headers=headers,
+                    headers={
+                        "Authorization": f"Bearer {self._tenant_token}",
+                        "Content-Type": "application/json; charset=utf-8",
+                    },
                     json=body,
                 )
                 data = resp.json()
-                if data.get("code") != 0:
+                code = data.get("code")
+                if code == 0:
+                    return
+                if code is not None and code not in (429, 500, 501, 502, 503):
                     logger.error(
-                        "Feishu send message failed: code=%s msg=%s",
-                        data.get("code"),
+                        "Feishu send failed: code=%s msg=%s",
+                        code,
                         data.get("msg"),
                     )
-        except Exception as e:
-            logger.error("Feishu send message error: %s", e)
+                    return
+                logger.warning(
+                    "Feishu send transient failure code=%s (attempt %s/%s)",
+                    code,
+                    attempt + 1,
+                    SEND_MAX_RETRIES,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Feishu send error (attempt %s/%s): %s",
+                    attempt + 1,
+                    SEND_MAX_RETRIES,
+                    e,
+                )
+
+            if attempt < SEND_MAX_RETRIES - 1:
+                await asyncio.sleep(0.5 * (2**attempt))
+
+        logger.error("Feishu send failed after %s attempts", SEND_MAX_RETRIES)
 
     async def _ensure_token(self) -> None:
         if self._tenant_token and time.time() < self._token_expire_at - 60:
@@ -135,12 +214,12 @@ class FeishuAdapter(IMAdapter):
     async def _refresh_tenant_token(self) -> None:
         body = {"app_id": self._app_id, "app_secret": self._app_secret}
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self._domain}{TENANT_TOKEN_URI}",
-                    json=body,
-                )
-                data = resp.json()
+            client = await self._get_http()
+            resp = await client.post(
+                f"{self._domain}{TENANT_TOKEN_URI}",
+                json=body,
+            )
+            data = resp.json()
             if data.get("code") == 0:
                 self._tenant_token = data.get("tenant_access_token", "")
                 expire = data.get("expire", 7200)
@@ -162,19 +241,20 @@ class FeishuAdapter(IMAdapter):
             "User-Agent": "aaagent-feishu-adapter",
         }
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(
-                    f"{self._domain}{GEN_ENDPOINT_URI}",
-                    headers=headers,
-                    json=body,
-                )
-                data = resp.json()
+            client = await self._get_http()
+            resp = await client.post(
+                f"{self._domain}{GEN_ENDPOINT_URI}",
+                headers=headers,
+                json=body,
+            )
+            data = resp.json()
             if data.get("code") == 0:
                 url = data.get("data", {}).get("URL")
                 if url:
                     service_id = 0
                     try:
                         from urllib.parse import urlparse, parse_qs
+
                         qs = parse_qs(urlparse(url).query)
                         if "service_id" in qs:
                             service_id = int(qs["service_id"][0])
@@ -191,41 +271,43 @@ class FeishuAdapter(IMAdapter):
         return None, 0
 
     async def _ws_loop(self) -> None:
-        reconnect_interval = 5
+        backoff = WS_BACKOFF_BASE
         while self._running and not self._stop_event.is_set():
             try:
                 await self._connect_and_listen()
+                backoff = WS_BACKOFF_BASE
             except asyncio.CancelledError:
                 logger.info("Feishu WS loop cancelled")
                 break
             except Exception as e:
                 logger.error("Feishu WS loop error: %s", e, exc_info=True)
+
             if self._stop_event.is_set():
                 break
-            logger.info("Reconnecting Feishu WS in %ss...", reconnect_interval)
+
+            delay = min(WS_BACKOFF_MAX, backoff) + random.uniform(0, 0.5)
+            logger.info("Reconnecting Feishu WS in %.1fs...", delay)
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=reconnect_interval)
+                await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
+            backoff = min(WS_BACKOFF_MAX, backoff * 2)
 
     async def _connect_and_listen(self) -> None:
         endpoint, service_id = await self._get_ws_endpoint()
         if not endpoint:
-            await asyncio.sleep(5)
-            return
+            raise RuntimeError("Failed to obtain Feishu WS endpoint")
 
-        logger.info(
-            "Connecting to Feishu WebSocket (service_id=%s)...", service_id
-        )
-        async with websockets.connect(endpoint, ping_interval=None, compression=None) as ws:
+        logger.info("Connecting to Feishu WebSocket (service_id=%s)...", service_id)
+        async with websockets.connect(
+            endpoint, ping_interval=None, compression=None
+        ) as ws:
             logger.info("Connected to Feishu WebSocket")
-            current_service_id = service_id
-            ping_task = asyncio.create_task(self._ping_loop(ws, current_service_id))
+            ping_task = asyncio.create_task(self._ping_loop(ws, service_id))
             try:
                 while self._running and not self._stop_event.is_set():
-                    logger.debug("Feishu WS waiting for message...")
                     msg_raw = await ws.recv()
-                    logger.info("Feishu WS recv: %d bytes", len(msg_raw))
+                    logger.debug("Feishu WS recv: %d bytes", len(msg_raw))
                     await self._handle_ws_frame(msg_raw, ws)
             finally:
                 ping_task.cancel()
@@ -238,8 +320,7 @@ class FeishuAdapter(IMAdapter):
         if not service_id:
             return
         try:
-            ping_frame = _build_control_frame(service=service_id, msg_type="ping")
-            await ws.send(ping_frame)
+            await ws.send(_build_control_frame(service=service_id, msg_type="ping"))
             logger.debug("Feishu WS initial ping sent")
         except Exception as e:
             logger.error("Feishu WS initial ping error: %s", e)
@@ -248,8 +329,7 @@ class FeishuAdapter(IMAdapter):
         while self._running and not self._stop_event.is_set():
             try:
                 await asyncio.sleep(15)
-                ping_frame = _build_control_frame(service=service_id, msg_type="ping")
-                await ws.send(ping_frame)
+                await ws.send(_build_control_frame(service=service_id, msg_type="ping"))
                 logger.debug("Feishu WS ping sent")
             except asyncio.CancelledError:
                 break
@@ -260,9 +340,9 @@ class FeishuAdapter(IMAdapter):
     async def _handle_ws_frame(self, raw: bytes | str, ws: Any) -> None:
         if isinstance(raw, (bytes, bytearray)) and len(raw) > 0:
             preview = raw[:30].hex() if len(raw) > 30 else raw.hex()
-            logger.info("Feishu WS frame received: %d bytes, head: %s", len(raw), preview)
+            logger.debug("Feishu WS frame: %d bytes head=%s", len(raw), preview)
         else:
-            logger.info("Feishu WS frame received: %r", raw[:100] if isinstance(raw, (bytes, str)) else raw)
+            logger.debug("Feishu WS frame: %r", raw[:100] if isinstance(raw, (bytes, str)) else raw)
         try:
             if isinstance(raw, str):
                 raw = raw.encode("utf-8", errors="ignore")
@@ -281,8 +361,9 @@ class FeishuAdapter(IMAdapter):
 
             if method == 0:
                 if msg_type == "ping":
-                    pong_frame = _build_control_frame(service=service, msg_type="pong")
-                    await ws.send(pong_frame)
+                    await ws.send(
+                        _build_control_frame(service=service, msg_type="pong")
+                    )
                     logger.debug("Feishu WS pong sent")
                 return
 
@@ -303,6 +384,7 @@ class FeishuAdapter(IMAdapter):
                 return
 
             if msg_type == "card":
+                logger.debug("Feishu card payload ignored")
                 return
 
             header = envelope.get("header", {}) or {}
@@ -317,6 +399,11 @@ class FeishuAdapter(IMAdapter):
             sender_id = sender.get("sender_id", {}) or {}
 
             if sender.get("sender_type") == "bot":
+                return
+
+            message_id = message.get("message_id", "")
+            if not self._remember_message(message_id):
+                logger.debug("Duplicate Feishu message %s skipped", message_id)
                 return
 
             chat_type = message.get("chat_type", "p2p")
@@ -349,7 +436,7 @@ class FeishuAdapter(IMAdapter):
                 content=text,
                 role="user",
                 raw={
-                    "message_id": message.get("message_id"),
+                    "message_id": message_id,
                     "chat_type": chat_type,
                 },
             )
@@ -365,14 +452,16 @@ class FeishuAdapter(IMAdapter):
 
     def _extract_text(self, content: str, msg_type: str) -> str:
         if msg_type != "text":
+            logger.debug("Ignoring non-text Feishu message (type=%s)", msg_type)
             return ""
         try:
             data = json.loads(content)
-            text = data.get("text", "")
-            text = re.sub(r"@_user_\d+\s*", "", text)
-            return text.strip()
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, TypeError):
+            logger.debug("Feishu message content not JSON, treating as raw text")
             return content
+        text = data.get("text", "")
+        text = re.sub(r"@_user_\d+\s*", "", text)
+        return text.strip()
 
 
 def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:

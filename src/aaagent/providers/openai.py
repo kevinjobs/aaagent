@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from aaagent.providers.base import LLMProvider, register_provider_type
+
+logger = logging.getLogger("aaagent.provider")
 
 
 @register_provider_type("openai_compatible")
@@ -16,6 +19,12 @@ class OpenAICompatibleProvider(LLMProvider):
         if api_key.startswith("${") and api_key.endswith("}"):
             env_var = api_key[2:-1]
             api_key = os.environ.get(env_var, "")
+
+        if not api_key:
+            logger.error(
+                "Provider '%s': api_key missing (set env var referenced in config)",
+                name,
+            )
 
         self._api_key = api_key or None
         self._base_url = config.get("base_url") or None

@@ -22,13 +22,20 @@ from aaagent.providers.openai import OpenAICompatibleProvider
 logger = logging.getLogger("aaagent")
 
 _THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+_UNCLOSED_THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
+_PUBLIC_ERROR = "服务暂时不可用，请稍后再试。"
 
 
 def _strip_think(text: str) -> str:
-    """Remove <think>...</think> / <thinking>...</thinking> blocks from LLM output."""
+    """Remove <think>...</think> / <thinking>...</thinking> blocks from LLM output.
+
+    Also strips orphan (unclosed) thinking tags to avoid leaking partial
+    reasoning when the model output is malformed.
+    """
     if not text:
         return text
     cleaned = _THINK_RE.sub("", text)
+    cleaned = _UNCLOSED_THINK_RE.sub("", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -138,8 +145,8 @@ class Application:
             reply = await self._provider.chat(context)
             reply = _strip_think(reply)
         except Exception as e:
-            logger.error("LLM call failed: %s", e)
-            reply = f"[Error] LLM call failed: {e}"
+            logger.error("LLM call failed for session %s: %s", msg.session_id, e, exc_info=True)
+            reply = _PUBLIC_ERROR
 
         reply_msg = Message(
             session_id=msg.session_id,
