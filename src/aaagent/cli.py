@@ -7,7 +7,6 @@ from pathlib import Path
 
 import typer
 
-from aaagent.adapters.cli_adapter import CliAdapter
 from aaagent.core.app import Application
 from aaagent.core.logctx import ContextFilter
 
@@ -82,6 +81,25 @@ def chat(config: str = "config.yaml") -> None:
     _setup_logging(_read_log_level(config), quiet=True)
     application = Application(config_path=config, enabled_adapters=[])
 
-    cli_adapter = CliAdapter({}, application._bus)
+    # Resolve CLI adapter via PluginManager (entry point "aaagent.adapters" -> cli)
+    from aaagent.core.plugin import PluginManager
+
+    cli_cls = PluginManager(application._config)._adapter_classes.get("cli") or _find_cli_adapter()
+    if cli_cls is None:
+        logger.error(
+            "CLI adapter plugin not installed. Run: pip install aaagent-plugin-cliadapter"
+        )
+        raise SystemExit(1)
+    cli_adapter = cli_cls({}, application._bus)
     application.add_adapter(cli_adapter)
     _run_application(application)
+
+
+def _find_cli_adapter():
+    """Locate CliAdapter class via PluginManager + entry_points."""
+    import importlib.metadata as md
+
+    for ep in md.entry_points(group="aaagent.adapters"):
+        if ep.name == "cli":
+            return ep.load()
+    return None

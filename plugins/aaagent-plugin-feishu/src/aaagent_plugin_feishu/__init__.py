@@ -13,9 +13,9 @@ from typing import Any
 import httpx
 import websockets
 
-from aaagent.adapters.base import IMAdapter
 from aaagent.core.bus import EventBus
 from aaagent.core.message import Message
+from aaagent.core.plugin import IMAdapter
 
 FEISHU_DOMAIN = "https://open.feishu.cn"
 GEN_ENDPOINT_URI = "/callback/ws/endpoint"

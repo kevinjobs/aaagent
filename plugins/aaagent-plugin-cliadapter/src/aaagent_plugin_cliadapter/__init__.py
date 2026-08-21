@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from rich.console import Console
@@ -9,9 +10,9 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-from aaagent.adapters.base import IMAdapter
 from aaagent.core.bus import EventBus
 from aaagent.core.message import Message
+from aaagent.core.plugin import IMAdapter
 
 
 class CliAdapter(IMAdapter):
@@ -51,9 +52,6 @@ class CliAdapter(IMAdapter):
             self._print_assistant(msg.content)
 
     async def _on_stream_token(self, token: str) -> None:
-        # stream_token fires before the final message_to_send; we just
-        # print tokens inline. The final message_to_send handler will
-        # print the markdown-formatted body after.
         self._streaming = True
         self._console.print(token, end="")
 
@@ -63,7 +61,6 @@ class CliAdapter(IMAdapter):
         turn = data["turn"]
         for tc in data["tool_calls"]:
             try:
-                import json
                 args = json.loads(tc.arguments)
             except (json.JSONDecodeError, TypeError):
                 args = tc.arguments
@@ -169,3 +166,6 @@ class CliAdapter(IMAdapter):
         self._console.print(Text("Assistant>", style="bold blue"), end=" ")
         self._console.print(Markdown(content))
         self._console.print()
+
+
+__all__ = ["CliAdapter"]

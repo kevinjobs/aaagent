@@ -1,4 +1,4 @@
-from aaagent.adapters.feishu import FeishuAdapter, _resolve_env
+from aaagent_plugin_feishu import FeishuAdapter, _resolve_env
 from aaagent.core.bus import EventBus
 
 

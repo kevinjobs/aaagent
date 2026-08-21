@@ -1,4 +1,4 @@
-from aaagent.adapters.feishu import (
+from aaagent_plugin_feishu import (
     _build_control_frame,
     _parse_frame,
 )
