@@ -192,3 +192,135 @@ async def test_archive_idle_sessions_sweep(tmp_path):
     archive = memory._archive_path.read_text(encoding="utf-8")
     assert "## Session: stale1" in archive
     assert "fresh1" not in archive
+
+
+class _RaisingProvider(LLMProvider):
+    """Test provider whose `chat` raises whatever is queued (or returns OK)."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name=name, config={})
+        self.queue: list[Exception | ChatResponse] = []
+        self.calls: list[tuple[list, object]] = []
+
+    async def chat(self, messages, tools=None, **kwargs):
+        self.calls.append((list(messages), tools))
+        if not self.queue:
+            return ChatResponse(content=f"ok-{self.name}")
+        item = self.queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _fallback_cfg(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "default_provider: primary\n"
+        "fallback_providers:\n"
+        "  - backup\n"
+        "  - absent\n",
+        encoding="utf-8",
+    )
+    return str(cfg)
+
+
+@pytest.mark.asyncio
+async def test_chat_with_fallback_switches_provider(tmp_path):
+    cfg = _fallback_cfg(tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    primary = _RaisingProvider("primary")
+    primary.queue.append(ConnectionError("connection reset"))
+    backup = _RaisingProvider("backup")
+
+    app = Application(
+        config_path=cfg,
+        bus=EventBus(),
+        memory=memory,
+        providers={"primary": primary, "backup": backup},
+    )
+    result = await app._chat_with_fallback([{"role": "user", "content": "hi"}])
+
+    assert result.content == "ok-backup"
+    assert len(primary.calls) == 1
+    assert len(backup.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_with_fallback_raises_non_retryable(tmp_path):
+    cfg = _fallback_cfg(tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    primary = _RaisingProvider("primary")
+    primary.queue.append(ValueError("bad request"))
+    backup = _RaisingProvider("backup")
+
+    app = Application(
+        config_path=cfg,
+        bus=EventBus(),
+        memory=memory,
+        providers={"primary": primary, "backup": backup},
+    )
+    with pytest.raises(ValueError):
+        await app._chat_with_fallback([{"role": "user", "content": "hi"}])
+    assert len(backup.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_with_fallback_all_fail_raises(tmp_path):
+    cfg = _fallback_cfg(tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    primary = _RaisingProvider("primary")
+    primary.queue.append(ConnectionError("boom1"))
+    backup = _RaisingProvider("backup")
+    backup.queue.append(ConnectionError("boom2"))
+
+    app = Application(
+        config_path=cfg,
+        bus=EventBus(),
+        memory=memory,
+        providers={"primary": primary, "backup": backup},
+    )
+    with pytest.raises(ConnectionError):
+        await app._chat_with_fallback([{"role": "user", "content": "hi"}])
+
+
+def test_resolve_provider_chain_order(tmp_path):
+    cfg = _fallback_cfg(tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    app = Application(
+        config_path=cfg,
+        bus=EventBus(),
+        memory=memory,
+        providers={
+            "primary": _RaisingProvider("primary"),
+            "backup": _RaisingProvider("backup"),
+            "other": _RaisingProvider("other"),
+        },
+    )
+    assert [p.name for p in app._provider_order] == ["primary", "backup"]
+
+
+@pytest.mark.asyncio
+async def test_stream_or_chat_falls_back_before_first_chunk(tmp_path):
+    cfg = _fallback_cfg(tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    class _BadStream(_RaisingProvider):
+        async def stream_chat(self, messages, **kwargs):
+            raise ConnectionError("streaming broke")
+            yield  # pragma: no cover
+
+    primary = _BadStream("primary")
+    backup = _RaisingProvider("backup")
+
+    app = Application(
+        config_path=cfg,
+        bus=EventBus(),
+        memory=memory,
+        providers={"primary": primary, "backup": backup},
+    )
+    result = await app._stream_or_chat([{"role": "user", "content": "hi"}])
+    assert result == "ok-backup"

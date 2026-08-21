@@ -25,6 +25,18 @@
 - Declared `[dependency-groups] dev` (pytest, pytest-asyncio, fastmcp) so
   `uv sync --all-packages` keeps the test harness installed
 
+### Providers
+- **Fallback providers**: `fallback_providers:` (ordered list of `providers:`
+  keys) is consulted when the primary fails transiently (network, timeout,
+  429 rate limit, 5xx, overloaded). Non-transient errors are raised
+  immediately. Streaming swaps only before the first token is emitted.
+- **Per-provider rate buckets**: `rate_limit.provider_rpm` now applies one
+  token bucket per provider instead of a single shared bucket.
+- Fix: `default_provider` selection block was unreachable dead code after
+  `_instantiate_provider` refactor; `self._provider` was only ever assigned
+  by `set_provider()`. Primary selection now happens in
+  `_resolve_provider_chain()` and is always applied at startup.
+
 ## 0.3.0 - Unreleased
 
 ### Plugin Refactor (commits 1-9)

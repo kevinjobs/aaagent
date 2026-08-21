@@ -102,6 +102,13 @@ MiniMax, cntoken, etc.) and `custom` (load any class via
 ```yaml
 default_provider: deepseek
 
+# Ordered list of providers to fall back to when the primary fails with a
+# transient error (network / timeout / 429 rate-limited / 5xx / overloaded).
+# Non-transient errors (auth, bad request) are raised immediately.
+# Entries are keys from the `providers:` block; missing ones are skipped.
+fallback_providers:
+  - openai
+
 providers:
   openai:
     type: openai_compatible

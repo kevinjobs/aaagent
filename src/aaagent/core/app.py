@@ -31,7 +31,7 @@ from aaagent.core.plugin import (
 from aaagent.core.prompt import PromptBuilder
 from aaagent.core.ratelimit import TokenBucket
 from aaagent.core.session import SessionStore
-from aaagent.core.types import LLMProvider, PROVIDER_TYPE_REGISTRY
+from aaagent.core.types import ChatResponse, LLMProvider, PROVIDER_TYPE_REGISTRY
 from aaagent.core.tool_registry import ToolRegistry
 
 logger = logging.getLogger("aaagent")
@@ -63,6 +63,52 @@ def _strip_think(text: str) -> str:
     cleaned = _UNCLOSED_THINK_RE.sub("", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+_RETRYABLE_EXC_TYPES = {
+    "APIConnectionError",
+    "APITimeoutError",
+    "APIStatusError",
+    "AuthenticationError",  # stale/rotated credentials often heal on retry via fallback
+    "InternalServerError",
+    "RateLimitError",
+    "ServiceUnavailableError",
+}
+
+_RETRYABLE_MARKERS = (
+    "429",
+    " 500",
+    " 502",
+    " 503",
+    " 504",
+    "rate limit",
+    "rate_limit",
+    "overloaded",
+    "overloaded_error",
+    "temporarily unavailable",
+    "try again later",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "broken pipe",
+    "timed out",
+    "timeout error",
+    "server disconnected",
+)
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    """Best-effort classification of transient provider errors.
+
+    Returns True for network / timeout / 429 / 5xx conditions that are worth
+    retrying against a fallback provider; False for everything else.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    if type(exc).__name__ in _RETRYABLE_EXC_TYPES:
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in _RETRYABLE_MARKERS)
 
 
 class Application:
@@ -148,10 +194,8 @@ class Application:
         self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
         rate_cfg = self._config.get("rate_limit", {})
-        rpm = int(rate_cfg.get("provider_rpm", 0))
-        self._provider_bucket: TokenBucket | None = (
-            TokenBucket(rate_per_min=rpm) if rpm > 0 else None
-        )
+        self._provider_rpm = int(rate_cfg.get("provider_rpm", 0))
+        self._provider_buckets: dict[str, TokenBucket] = {}
         self._setup()
 
     def _load_config(self, path: str) -> dict[str, Any]:
@@ -219,6 +263,7 @@ class Application:
     def _setup(self) -> None:
         if not self._providers:
             self._setup_providers()
+        self._resolve_provider_chain()
         self._setup_adapters()
         self._setup_event_handlers()
 
@@ -285,11 +330,102 @@ class Application:
 
         return _Shim(name, instance)
 
-        if default_name and default_name in self._providers:
+    def _resolve_provider_chain(self) -> None:
+        """Pick the primary provider and build the fallback order.
+
+        `self._provider` is the primary used for latency-sensitive calls;
+        `self._provider_order` is the ordered list consulted by
+        `_chat_with_fallback` when the primary fails transiently.
+        """
+        default_name = self._config.get("default_provider", "")
+
+        if default_name in self._providers:
             self._provider = self._providers[default_name]
         elif self._providers:
             self._provider = next(iter(self._providers.values()))
-            logger.info("No default_provider set, using first provider: %s", self._provider.name)
+            logger.info(
+                "No default_provider set, using first provider: %s",
+                self._provider.name,
+            )
+        else:
+            self._provider = None
+
+        order: list[LLMProvider] = []
+        if self._provider is not None:
+            order.append(self._provider)
+        for name in self._config.get("fallback_providers", []) or []:
+            provider = self._providers.get(name)
+            if provider is None:
+                logger.warning(
+                    "fallback_providers entry '%s' is not a loadable provider, skipped",
+                    name,
+                )
+            elif provider not in order:
+                order.append(provider)
+
+        if not order and self._providers:
+            order.append(next(iter(self._providers.values())))
+
+        self._provider_order = order
+        if not self._provider_order:
+            logger.warning("No LLM provider available")
+        self._init_provider_buckets()
+
+    def _init_provider_buckets(self) -> None:
+        self._provider_buckets = {}
+        if self._provider_rpm > 0:
+            for provider in self._provider_order:
+                self._provider_buckets[provider.name] = TokenBucket(
+                    rate_per_min=self._provider_rpm
+                )
+
+    async def _acquire_provider_bucket(self, provider: LLMProvider) -> None:
+        bucket = self._provider_buckets.get(provider.name)
+        if bucket is not None:
+            await bucket.acquire()
+
+    async def chat(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, **kwargs
+    ) -> "ChatResponse":
+        """Fallback-aware chat used by internal callers (session compress, etc.)."""
+        return await self._chat_with_fallback(messages, tools=tools, **kwargs)
+
+    async def _chat_with_fallback(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> "ChatResponse":
+        providers = self._provider_order or (
+            [self._provider] if self._provider is not None else []
+        )
+        if not providers:
+            raise RuntimeError("No LLM provider configured")
+
+        last_exc: Exception | None = None
+        for index, provider in enumerate(providers):
+            try:
+                await self._acquire_provider_bucket(provider)
+                return await provider.chat(messages, tools=tools, **kwargs)
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                if index + 1 >= len(providers):
+                    break
+                if not _is_retryable_provider_error(e):
+                    logger.error(
+                        "Provider %s failed with non-retryable error: %s",
+                        provider.name,
+                        e,
+                    )
+                    raise
+                logger.warning(
+                    "Provider %s failed (retryable), trying next: %s",
+                    provider.name,
+                    e,
+                )
+
+        assert last_exc is not None
+        raise last_exc
 
     def _setup_adapters(self) -> None:
         adapters_cfg = self._config.get("adapters", {})
@@ -359,27 +495,63 @@ class Application:
             role="assistant",
         )
 
-        await self._session_store.add_message(msg.session_id, reply_msg, provider=self._provider)
-        await self._memory.maybe_consolidate_profile(self._provider)
+        await self._session_store.add_message(msg.session_id, reply_msg, provider=self)
+        await self._memory.maybe_consolidate_profile(self)
 
         await self._bus.emit("message_to_send", reply_msg)
 
     async def _stream_or_chat(self, messages: list[dict[str, Any]]) -> str:
-        """Prefer streaming reply if the provider supports it; else one-shot chat."""
-        stream_fn = getattr(self._provider, "stream_chat", None)
-        if stream_fn is not None:
+        """Prefer streaming reply if the provider supports it; else one-shot chat.
+
+        Falls back to the next provider on transient errors, but only while no
+        tokens have been emitted yet (a mid-stream failure cannot be retried).
+        """
+        providers = self._provider_order or (
+            [self._provider] if self._provider is not None else []
+        )
+        if not providers:
+            raise RuntimeError("No LLM provider configured")
+
+        last_exc: Exception | None = None
+        for index, provider in enumerate(providers):
+            stream_fn = getattr(provider, "stream_chat", None)
+            started = False
             try:
-                chunks: list[str] = []
-                async for chunk in stream_fn(messages):
-                    chunks.append(chunk)
-                    await self._bus.emit("stream_token", chunk)
-                return "".join(chunks)
-            except NotImplementedError:
-                pass
-        if self._provider_bucket is not None:
-            await self._provider_bucket.acquire()
-        result = await self._provider.chat(messages)
-        return result.content
+                if stream_fn is not None:
+                    try:
+                        chunks: list[str] = []
+                        async for chunk in stream_fn(messages):
+                            started = True
+                            chunks.append(chunk)
+                            await self._bus.emit("stream_token", chunk)
+                        if chunks:
+                            return "".join(chunks)
+                    except NotImplementedError:
+                        pass
+                await self._acquire_provider_bucket(provider)
+                result = await provider.chat(messages)
+                return result.content
+            except Exception as e:  # noqa: BLE001
+                if started:
+                    raise
+                last_exc = e
+                if index + 1 >= len(providers):
+                    break
+                if not _is_retryable_provider_error(e):
+                    logger.error(
+                        "Provider %s failed with non-retryable error: %s",
+                        provider.name,
+                        e,
+                    )
+                    raise
+                logger.warning(
+                    "Provider %s failed (retryable), trying next: %s",
+                    provider.name,
+                    e,
+                )
+
+        assert last_exc is not None
+        raise last_exc
 
     async def _run_tool_loop(
         self,
@@ -402,9 +574,7 @@ class Application:
                     session_id,
                 )
                 return "上下文过长，已中止。请开启新对话。"
-            if self._provider_bucket is not None:
-                await self._provider_bucket.acquire()
-            result = await self._provider.chat(messages, tools=tools)
+            result = await self._chat_with_fallback(messages, tools=tools)
 
             if not result.tool_calls:
                 return result.content
@@ -489,6 +659,8 @@ class Application:
 
     def set_provider(self, provider: LLMProvider) -> None:
         self._provider = provider
+        self._provider_order = [provider]
+        self._init_provider_buckets()
 
     def get_provider(self, name: str) -> LLMProvider | None:
         return self._providers.get(name)
