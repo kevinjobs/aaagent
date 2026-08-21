@@ -141,3 +141,54 @@ async def test_application_tool_loop_length_aborts(tmp_path):
     assert provider.call_count == 0
     assert len(sent) == 1
     assert "上下文过长" in sent[0].content
+
+
+@pytest.mark.asyncio
+async def test_archive_idle_sessions_sweep(tmp_path):
+    """Idle sessions are archived to memory and dropped from the store."""
+    import time
+
+    cfg = _write_minimal_config(tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+    app = Application(
+        config_path=str(cfg),
+        bus=EventBus(),
+        memory=memory,
+        providers={},
+    )
+    app._archive_interval = 1  # seconds, for testability
+
+    await app._session_store.add_message(
+        "stale1",
+        Message(
+            session_id="stale1",
+            platform="cli",
+            chat_id="c",
+            user_id="u1",
+            content="hello",
+            role="user",
+        ),
+    )
+    await app._session_store.add_message(
+        "fresh1",
+        Message(
+            session_id="fresh1",
+            platform="cli",
+            chat_id="c",
+            user_id="u1",
+            content="hi",
+            role="user",
+        ),
+    )
+    stale = await app._session_store.get_session("stale1")
+    stale.last_activity = time.time() - 7200
+
+    await app._archive_idle_sessions()
+
+    remaining = {s.id for s in app._session_store.list_sessions()}
+    assert "stale1" not in remaining
+    assert "fresh1" in remaining
+
+    archive = memory._archive_path.read_text(encoding="utf-8")
+    assert "## Session: stale1" in archive
+    assert "fresh1" not in archive

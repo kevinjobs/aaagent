@@ -86,6 +86,10 @@ class InMemorySessionStore(SessionStore):
         async with self._get_lock(session_id):
             return self.get_or_create(session_id)
 
+    async def drop_session(self, session_id: str) -> None:
+        self._sessions.pop(session_id, None)
+        self._locks.pop(session_id, None)
+
     def list_sessions(self) -> list[Session]:
         return list(self._sessions.values())
 

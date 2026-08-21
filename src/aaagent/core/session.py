@@ -17,6 +17,7 @@ class Session:
     summary: str | None = None
     max_history: int = 20
     compress_threshold: float = 0.8
+    created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     system_prompt: str = ""
 
@@ -119,6 +120,10 @@ class SessionStore(abc.ABC):
 
     @abc.abstractmethod
     async def get_session(self, session_id: str) -> Session: ...
+
+    @abc.abstractmethod
+    async def drop_session(self, session_id: str) -> None:
+        """Remove a session (and its state) from the store entirely."""
 
     @abc.abstractmethod
     def list_sessions(self) -> list[Session]: ...

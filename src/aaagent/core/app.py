@@ -5,6 +5,7 @@ import importlib
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +142,8 @@ class Application:
                     base_path=Path(memory_cfg["base_path"]),
                 )
         self._memory = memory
+        _archive_hours = self._config.get("memory", {}).get("archive_after_hours", 24)
+        self._archive_interval = float(_archive_hours or 24) * 3600
         self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
         rate_cfg = self._config.get("rate_limit", {})
@@ -487,6 +490,8 @@ class Application:
             return
 
         self._health_task = asyncio.create_task(self._health_check_loop())
+        if self._memory is not None and self._archive_interval > 0:
+            self._archive_task = asyncio.create_task(self._archive_sweep_loop())
         try:
             tasks = [adapter.start() for adapter in self._adapters]
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -513,13 +518,63 @@ class Application:
                         type(adapter).__name__,
                     )
 
-    def _cancel_health_task(self) -> None:
-        task = getattr(self, "_health_task", None)
-        if task is not None and not task.done():
-            task.cancel()
+    def _cancel_background_tasks(self) -> None:
+        for attr in ("_health_task", "_archive_task"):
+            task = getattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+
+    async def _archive_sweep_loop(self) -> None:
+        """Periodically archive idle sessions into long-term memory.
+
+        Sessions idle longer than `archive_after_hours` are archived via
+        `MemoryStore.archive_session` and then dropped from the session store.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self._archive_interval)
+                await self._archive_idle_sessions()
+            except asyncio.CancelledError:
+                break
+            except Exception:  # noqa: BLE001
+                logger.exception("Session archive sweep failed")
+
+    async def _archive_idle_sessions(self) -> None:
+        memory = self._memory
+        store = self._session_store
+        if memory is None or store is None:
+            return
+        cutoff = time.time() - self._archive_interval
+
+        stale: list[tuple[str, float, float, str]] = []
+        for session in store.list_sessions():
+            if session.last_activity > cutoff:
+                continue
+            if not session.messages and not session.summary:
+                continue
+            start = getattr(session, "created_at", session.last_activity)
+            stale.append(
+                (session.id, session.last_activity, start, session.summary or "")
+            )
+
+        if not stale:
+            return
+
+        for session_id, end_time, start_time, summary in stale:
+            try:
+                await memory.archive_session(
+                    session_id,
+                    summary,
+                    start_time,
+                    end_time,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to archive session %s", session_id)
+                continue
+            await store.drop_session(session_id)
 
     async def stop(self) -> None:
-        self._cancel_health_task()
+        self._cancel_background_tasks()
         await self._memory.close()
         for adapter in self._adapters:
             try:
