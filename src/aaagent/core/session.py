@@ -1,14 +1,11 @@
 from __future__ import annotations
 
+import abc
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from aaagent.core.message import Message
-
-if TYPE_CHECKING:
-    from aaagent.providers.base import LLMProvider
 
 
 @dataclass
@@ -34,7 +31,7 @@ class Session:
     def _is_tool_message(m: Message) -> bool:
         return m.role == "tool" or (m.role == "assistant" and m.tool_calls)
 
-    async def compress(self, provider: LLMProvider) -> None:
+    async def compress(self, provider) -> None:
         if len(self.messages) <= self.max_history:
             return
 
@@ -70,7 +67,13 @@ class Session:
         return context
 
 
-class SessionStore:
+class SessionStore(abc.ABC):
+    """Abstract base for session stores.
+
+    Concrete implementations live in aaagent-plugin-* packages and are
+    registered as plugins (entry_points "aaagent.sessions").
+    """
+
     def __init__(
         self,
         max_history: int = 20,
@@ -78,7 +81,6 @@ class SessionStore:
         max_sessions: int = 1000,
         system_prompt: str = "",
     ) -> None:
-        self._sessions: dict[str, Session] = {}
         self._max_history = max_history
         self._compress_threshold = compress_threshold
         self._max_sessions = max(1, max_sessions)
@@ -92,60 +94,35 @@ class SessionStore:
             self._locks[session_id] = lock
         return lock
 
-    def _evict_lru(self) -> None:
-        if len(self._sessions) <= self._max_sessions:
-            return
-        overflow = len(self._sessions) - self._max_sessions
-        oldest = sorted(
-            self._sessions.items(), key=lambda kv: kv[1].last_activity
-        )[:overflow]
-        for sid, _ in oldest:
-            self._sessions.pop(sid, None)
-            self._locks.pop(sid, None)
+    @property
+    def max_history(self) -> int:
+        return self._max_history
 
-    def get_or_create(
-        self, session_id: str, platform: str = "", chat_id: str = ""
-    ) -> Session:
-        session = self._sessions.get(session_id)
-        if session is None:
-            session = Session(
-                id=session_id,
-                platform=platform,
-                chat_id=chat_id,
-                max_history=self._max_history,
-                compress_threshold=self._compress_threshold,
-                system_prompt=self._system_prompt,
-            )
-            self._sessions[session_id] = session
-            self._evict_lru()
-        return session
+    @property
+    def compress_threshold(self) -> float:
+        return self._compress_threshold
 
+    @property
+    def system_prompt(self) -> str:
+        return self._system_prompt
+
+    @abc.abstractmethod
     async def add_message(
         self,
         session_id: str,
         msg: Message,
-        provider: LLMProvider | None = None,
-    ) -> Session:
-        async with self._get_lock(session_id):
-            session = self.get_or_create(session_id, msg.platform, msg.chat_id)
-            session.messages.append(msg)
-            session.last_activity = time.time()
-            if provider is not None and session.needs_compress():
-                await session.compress(provider)
-            return session
+        provider=None,
+    ) -> Session: ...
 
-    async def get_context(self, session_id: str) -> list[dict[str, str]]:
-        async with self._get_lock(session_id):
-            session = self.get_or_create(session_id)
-            return session.get_context()
+    @abc.abstractmethod
+    async def get_context(self, session_id: str) -> list[dict[str, str]]: ...
 
-    async def get_session(self, session_id: str) -> "Session":
-        async with self._get_lock(session_id):
-            return self.get_or_create(session_id)
+    @abc.abstractmethod
+    async def get_session(self, session_id: str) -> Session: ...
 
-    def list_sessions(self) -> list[Session]:
-        return list(self._sessions.values())
+    @abc.abstractmethod
+    def list_sessions(self) -> list[Session]: ...
 
     @property
-    def max_sessions(self) -> int:
-        return self._max_sessions
+    @abc.abstractmethod
+    def max_sessions(self) -> int: ...

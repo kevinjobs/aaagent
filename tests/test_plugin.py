@@ -76,16 +76,17 @@ def test_resolve_env_dict_shallow():
     assert out["b"] == 5
 
 
-def test_plugin_manager_loads_empty_when_nothing_registered():
+def test_plugin_manager_loads_entry_points_even_without_builtin():
+    """entry_points discovery runs even when BUILTIN_* dicts are empty."""
     pm = PluginManager(config={})
+    pm.BUILTIN_PROVIDERS = {}
+    pm.BUILTIN_TOOLS = {}
+    pm.BUILTIN_ADAPTERS = {}
+    pm.BUILTIN_SESSIONS = {}
+    pm.BUILTIN_MEMORIES = {}
     pm.load()
-    assert pm.loaded == {
-        "providers": [],
-        "tools": [],
-        "adapters": [],
-        "sessions": [],
-        "memories": [],
-    }
+    # entry_points for installed plugins (e.g. inmemorysession) should be visible
+    assert "inmemory" in pm.loaded["sessions"]
 
 
 def test_plugin_manager_validates_missing_type():

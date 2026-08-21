@@ -158,3 +158,9 @@ BUILTIN_TOOLS: dict[str, str] = {
     "shell": "aaagent.core._builtin_wrappers:_BuiltinShellTools",
     "memory": "aaagent.core._builtin_wrappers:_BuiltinMemoryTools",
 }
+
+BUILTIN_SESSIONS: dict[str, str] = {
+    "inmemory": "aaagent_plugin_inmemorysession:InMemorySessionFactory",
+}
+
+BUILTIN_MEMORIES: dict[str, str] = {}

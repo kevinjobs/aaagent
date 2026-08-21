@@ -1,7 +1,8 @@
 import pytest
 
 from aaagent.core.message import Message
-from aaagent.core.session import Session, SessionStore
+from aaagent.core.session import Session
+from aaagent_plugin_inmemorysession import InMemorySessionStore
 
 
 class FakeProvider:
@@ -16,9 +17,13 @@ class FakeProvider:
         return self.summary
 
 
+def _store(**kwargs):
+    return InMemorySessionStore(**kwargs)
+
+
 @pytest.mark.asyncio
 async def test_add_message_increments_session():
-    store = SessionStore()
+    store = _store()
     msg = Message(session_id="s1", role="user", content="hi")
     await store.add_message("s1", msg)
     session = store.get_or_create("s1")
@@ -28,7 +33,7 @@ async def test_add_message_increments_session():
 
 @pytest.mark.asyncio
 async def test_get_context_no_summary():
-    store = SessionStore()
+    store = _store()
     msg = Message(role="user", content="hello")
     await store.add_message("s1", msg)
     ctx = await store.get_context("s1")
@@ -95,7 +100,7 @@ async def test_compress_includes_previous_summary():
 async def test_concurrent_add_is_serialized():
     import asyncio
 
-    store = SessionStore()
+    store = _store()
     msgs = [Message(content=str(i)) for i in range(50)]
 
     async def add(m):
@@ -108,12 +113,11 @@ async def test_concurrent_add_is_serialized():
 
 @pytest.mark.asyncio
 async def test_lru_eviction_when_over_max_sessions():
-    store = SessionStore(max_sessions=3)
+    store = _store(max_sessions=3)
     for i in range(5):
         await store.add_message(f"s{i}", Message(content=str(i)))
     sessions = store.list_sessions()
     assert len(sessions) == 3
-    # Oldest two should be evicted
     ids = {s.id for s in sessions}
     assert "s3" in ids and "s4" in ids
     assert "s0" not in ids and "s1" not in ids
@@ -121,5 +125,5 @@ async def test_lru_eviction_when_over_max_sessions():
 
 @pytest.mark.asyncio
 async def test_max_sessions_property():
-    store = SessionStore(max_sessions=42)
+    store = _store(max_sessions=42)
     assert store.max_sessions == 42

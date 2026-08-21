@@ -12,7 +12,9 @@ import yaml
 
 from aaagent.core._builtin_wrappers import (
     BUILTIN_ADAPTERS,
+    BUILTIN_MEMORIES,
     BUILTIN_PROVIDERS,
+    BUILTIN_SESSIONS,
     BUILTIN_TOOLS,
 )
 from aaagent.core.bus import EventBus
@@ -86,13 +88,30 @@ class Application:
         self._plugins.BUILTIN_PROVIDERS = dict(BUILTIN_PROVIDERS)
         self._plugins.BUILTIN_ADAPTERS = dict(BUILTIN_ADAPTERS)
         self._plugins.BUILTIN_TOOLS = dict(BUILTIN_TOOLS)
+        self._plugins.BUILTIN_SESSIONS = dict(BUILTIN_SESSIONS)
+        self._plugins.BUILTIN_MEMORIES = dict(BUILTIN_MEMORIES)
         self._plugins.load()
 
-        self._session_store = session_store if session_store is not None else SessionStore(
-            max_history=self._config.get("session", {}).get("max_history", 20),
-            compress_threshold=self._config.get("session", {}).get("compress_threshold", 0.8),
-            system_prompt=self._config.get("system_prompt", ""),
-        )
+        # Session / Memory via plugin factories (with fallback to direct construction
+        # for tests that inject session_store / memory directly)
+        if session_store is None:
+            session_cfg = self._config.get("session", {})
+            session_type = session_cfg.get("type", "inmemory")
+            try:
+                factory = self._plugins.get_session_factory(session_type)
+                session_store = factory.create(session_cfg)
+            except PluginNotFoundError as e:
+                logger.warning(
+                    "No session store plugin for type '%s': %s; falling back to direct construction",
+                    session_type,
+                    e,
+                )
+                session_store = SessionStore(
+                    max_history=session_cfg.get("max_history", 20),
+                    compress_threshold=session_cfg.get("compress_threshold", 0.8),
+                    system_prompt=session_cfg.get("system_prompt", ""),
+                )
+        self._session_store = session_store
         self._adapters: list[IMAdapter] = []
         self._providers: dict[str, LLMProvider] = providers if providers is not None else {}
         self._provider: LLMProvider | None = None
