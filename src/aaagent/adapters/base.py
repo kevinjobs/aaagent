@@ -22,3 +22,11 @@ class IMAdapter(ABC):
 
     @abstractmethod
     async def send(self, msg: Message) -> None: ...
+
+    async def health_check(self) -> bool:
+        """Return True if the adapter is in a healthy state.
+
+        Override in subclasses to perform custom checks (token validity,
+        connection liveness, etc.). Default returns True.
+        """
+        return True

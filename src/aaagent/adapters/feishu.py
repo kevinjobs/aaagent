@@ -30,6 +30,7 @@ SEND_MAX_RETRIES = 3
 SEEN_MESSAGES_CAP = 10000
 WS_BACKOFF_BASE = 1.0
 WS_BACKOFF_MAX = 60.0
+FEISHU_DEBUG = os.environ.get("FEISHU_DEBUG", "").lower() in ("1", "true", "yes")
 
 
 def _resolve_env(value: str) -> str:
@@ -72,8 +73,19 @@ class FeishuAdapter(IMAdapter):
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(timeout=HTTP_TIMEOUT)
+            self._http = await self._create_http()
         return self._http
+
+    async def _create_http(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=HTTP_TIMEOUT)
+
+    async def _connect_ws(self, endpoint: str):
+        return await websockets.connect(endpoint, ping_interval=None, compression=None)
+
+    async def health_check(self) -> bool:
+        if not self._tenant_token:
+            return False
+        return time.time() < self._token_expire_at
 
     async def _close_http(self) -> None:
         if self._http and not self._http.is_closed:
@@ -299,9 +311,7 @@ class FeishuAdapter(IMAdapter):
             raise RuntimeError("Failed to obtain Feishu WS endpoint")
 
         logger.info("Connecting to Feishu WebSocket (service_id=%s)...", service_id)
-        async with websockets.connect(
-            endpoint, ping_interval=None, compression=None
-        ) as ws:
+        async with await self._connect_ws(endpoint) as ws:
             logger.info("Connected to Feishu WebSocket")
             ping_task = asyncio.create_task(self._ping_loop(ws, service_id))
             try:
