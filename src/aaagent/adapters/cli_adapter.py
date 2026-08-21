@@ -41,7 +41,7 @@ class CliAdapter(IMAdapter):
         self._running = False
 
     async def send(self, msg: Message) -> None:
-        self._print_assistant(msg.content)
+        await self.bus.emit("message_to_send", msg)
 
     async def _on_message_to_send(self, msg: Message) -> None:
         if msg.platform == "cli":

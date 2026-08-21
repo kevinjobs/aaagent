@@ -17,8 +17,6 @@ from aaagent.adapters.base import IMAdapter
 from aaagent.core.bus import EventBus
 from aaagent.core.message import Message
 
-logger = logging.getLogger("aaagent.feishu")
-
 FEISHU_DOMAIN = "https://open.feishu.cn"
 GEN_ENDPOINT_URI = "/callback/ws/endpoint"
 SEND_MESSAGE_URI = "/open-apis/im/v1/messages"
@@ -31,6 +29,10 @@ SEEN_MESSAGES_CAP = 10000
 WS_BACKOFF_BASE = 1.0
 WS_BACKOFF_MAX = 60.0
 FEISHU_DEBUG = os.environ.get("FEISHU_DEBUG", "").lower() in ("1", "true", "yes")
+
+logger = logging.getLogger("aaagent.feishu")
+if FEISHU_DEBUG:
+    logger.setLevel(logging.DEBUG)
 
 
 def _resolve_env(value: str) -> str:
