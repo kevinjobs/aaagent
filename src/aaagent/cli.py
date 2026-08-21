@@ -9,6 +9,7 @@ import typer
 
 from aaagent.adapters.cli_adapter import CliAdapter
 from aaagent.core.app import Application
+from aaagent.core.logctx import ContextFilter
 
 app = typer.Typer(name="aaagent", help="A pluggable IM + LLM agent framework")
 
@@ -26,18 +27,19 @@ def _setup_logging(level: str = "INFO", quiet: bool = False) -> None:
     for h in list(root.handlers):
         root.removeHandler(h)
 
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] [%(session_id)s/%(platform)s] %(name)s: %(message)s"
+    )
+
     if quiet:
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
         handler = logging.FileHandler(log_dir / "aaagent.log", encoding="utf-8")
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
     else:
         handler = _AuthScrubbingHandler()
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
+
+    handler.setFormatter(fmt)
+    handler.addFilter(ContextFilter())
 
     root.addHandler(handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -48,6 +50,9 @@ def _run_application(application: Application) -> None:
         asyncio.run(application.run())
     except KeyboardInterrupt:
         pass
+    except Exception:
+        logging.getLogger("aaagent").exception("Application crashed")
+        raise SystemExit(1)
 
 
 def _read_log_level(config_path: str) -> str:

@@ -15,8 +15,11 @@ from aaagent.adapters.cli_adapter import CliAdapter
 from aaagent.adapters.feishu import FeishuAdapter
 from aaagent.adapters.wechat import WechatAdapter
 from aaagent.core.bus import EventBus
+from aaagent.core.logctx import reset_context, set_context
 from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
+from aaagent.core.prompt import PromptBuilder
+from aaagent.core.ratelimit import TokenBucket
 from aaagent.core.session import SessionStore
 from aaagent.providers.base import LLMProvider, PROVIDER_TYPE_REGISTRY
 from aaagent.providers.openai import OpenAICompatibleProvider
@@ -120,9 +123,15 @@ class Application:
         self._provider: LLMProvider | None = None
         self._memory = memory if memory is not None else MemoryStore(
             data_dir=self._config.get("memory", {}).get("data_dir", "data/memories"),
+            base_path=Path(config_path).resolve().parent if Path(config_path).is_absolute() else Path.cwd(),
         )
         self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
+        rate_cfg = self._config.get("rate_limit", {})
+        rpm = int(rate_cfg.get("provider_rpm", 0))
+        self._provider_bucket: TokenBucket | None = (
+            TokenBucket(rate_per_min=rpm) if rpm > 0 else None
+        )
         self._setup()
 
     def _load_config(self, path: str) -> dict[str, Any]:
@@ -219,12 +228,23 @@ class Application:
             logger.error("No LLM provider configured")
             return
 
+        tokens = set_context(
+            session_id=msg.session_id,
+            platform=msg.platform,
+            chat_id=msg.chat_id,
+        )
+        try:
+            await self._handle_message(msg)
+        finally:
+            reset_context(tokens)
+
+    async def _handle_message(self, msg: Message) -> None:
         await self._session_store.add_message(msg.session_id, msg)
 
-        context = await self._session_store.get_context(msg.session_id)
+        session = await self._session_store.get_session(msg.session_id)
         profile = await self._memory.recall_profile()
-        if profile:
-            context.insert(1, {"role": "system", "content": f"## 用户画像（知道的信息）\n\n{profile}\n\n注意：用户画像仅供参考，不一定是当前用户的最新情况，请通过 recall 工具获取最新信息。"})
+        builder = PromptBuilder(system_prompt=self._session_store._system_prompt)
+        context = builder.build(session, profile=profile)
 
         try:
             reply_text = await self._run_tool_loop(
@@ -249,6 +269,23 @@ class Application:
 
         await self._bus.emit("message_to_send", reply_msg)
 
+    async def _stream_or_chat(self, messages: list[dict[str, Any]]) -> str:
+        """Prefer streaming reply if the provider supports it; else one-shot chat."""
+        stream_fn = getattr(self._provider, "stream_chat", None)
+        if stream_fn is not None:
+            try:
+                chunks: list[str] = []
+                async for chunk in stream_fn(messages):
+                    chunks.append(chunk)
+                    await self._bus.emit("stream_token", chunk)
+                return "".join(chunks)
+            except NotImplementedError:
+                pass
+        if self._provider_bucket is not None:
+            await self._provider_bucket.acquire()
+        result = await self._provider.chat(messages)
+        return result.content
+
     async def _run_tool_loop(
         self,
         session_id: str,
@@ -258,8 +295,7 @@ class Application:
     ) -> str:
         tools = self._tool_registry.definitions
         if not tools:
-            result = await self._provider.chat(messages)
-            return result.content
+            return await self._stream_or_chat(messages)
 
         for turn in range(1, _MAX_TOOL_TURNS + 1):
             total_chars = sum(len(str(m.get("content", ""))) for m in messages)
@@ -271,6 +307,8 @@ class Application:
                     session_id,
                 )
                 return "上下文过长，已中止。请开启新对话。"
+            if self._provider_bucket is not None:
+                await self._provider_bucket.acquire()
             result = await self._provider.chat(messages, tools=tools)
 
             if not result.tool_calls:
@@ -299,10 +337,13 @@ class Application:
             )
 
             for tc in result.tool_calls:
+                t0 = time.monotonic()
                 output = await self._tool_registry.execute(tc.name, tc.arguments)
+                duration_ms = int((time.monotonic() - t0) * 1000)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
+                    "name": tc.name,
                     "content": output,
                 })
 
@@ -316,6 +357,7 @@ class Application:
                         "tool_name": tc.name,
                         "arguments": tc.arguments,
                         "result": output,
+                        "duration_ms": duration_ms,
                         "turn": turn,
                     },
                 )
