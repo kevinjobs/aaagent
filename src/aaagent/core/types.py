@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 
@@ -19,6 +19,13 @@ class ChatResponse:
 
 
 class LLMProvider(ABC):
+    """Legacy LLM provider ABC retained for backward compatibility.
+
+    New plugins should subclass ``aaagent.core.plugin.Provider`` instead.
+    This class is still used by ``Application`` for the internal provider
+    shim and by tests via ``FakeProvider``.
+    """
+
     name: str = ""
 
     def __init__(self, name: str, config: dict[str, Any]) -> None:
@@ -38,23 +45,17 @@ class LLMProvider(ABC):
         messages: list[dict[str, str]],
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Yield text chunks for a streaming reply.
-
-        Default raises NotImplementedError; subclasses with native
-        streaming support should override. Streaming with tool calls is
-        not supported — fall back to chat() in that case.
-        """
         raise NotImplementedError(
             f"{type(self).__name__} does not support stream_chat"
         )
-        yield ""  # pragma: no cover — makes this an async generator
+        yield ""  # pragma: no cover
 
 
 PROVIDER_TYPE_REGISTRY: dict[str, type[LLMProvider]] = {}
 
 
 def register_provider_type(provider_type: str) -> type:
-    def decorator(cls: type[LLMProvider]) -> type:
+    def decorator(cls: type[LLMProvider]) -> type[LLMProvider]:
         PROVIDER_TYPE_REGISTRY[provider_type] = cls
         return cls
     return decorator

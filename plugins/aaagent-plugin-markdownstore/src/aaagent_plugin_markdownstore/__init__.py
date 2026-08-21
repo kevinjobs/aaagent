@@ -13,7 +13,7 @@ from aaagent.core.memory import MemoryStore
 from aaagent.core.plugin import MemoryStoreFactory
 
 if TYPE_CHECKING:
-    from aaagent.providers.base import LLMProvider
+    from aaagent.core.types import LLMProvider
 
 logger = logging.getLogger("aaagent.markdownstore")
 

@@ -7,7 +7,7 @@ import pytest
 from aaagent.core.bus import EventBus
 from aaagent.core.logctx import ContextFilter, reset_context, set_context
 from aaagent.core.ratelimit import TokenBucket
-from aaagent.providers.base import ChatResponse, LLMProvider, ToolCall
+from aaagent.core.types import ChatResponse, LLMProvider, ToolCall
 
 
 class _RecordingProvider(LLMProvider):

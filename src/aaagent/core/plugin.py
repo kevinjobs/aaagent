@@ -25,8 +25,8 @@ if TYPE_CHECKING:
     from aaagent.core.memory import MemoryStore
     from aaagent.core.message import Message
     from aaagent.core.session import SessionStore
-    from aaagent.providers.base import ChatResponse
-    from aaagent.tools.registry import ToolRegistry
+    from aaagent.core.types import ChatResponse
+    from aaagent.core.tool_registry import ToolRegistry
 
 logger = logging.getLogger("aaagent.plugin")
 

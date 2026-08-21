@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator
 from openai import AsyncOpenAI
 
 from aaagent.core.plugin import Provider
-from aaagent.providers.base import ChatResponse, ToolCall
+from aaagent.core.types import ChatResponse, ToolCall
 
 logger = logging.getLogger("aaagent.provider.openai")
 

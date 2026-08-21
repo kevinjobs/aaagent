@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from aaagent.providers.base import LLMProvider
+    from aaagent.core.types import LLMProvider
 
 
 logger = logging.getLogger("aaagent.memory")

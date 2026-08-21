@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
 
-from aaagent.providers.base import ChatResponse, LLMProvider, ToolCall
+from aaagent.core.types import ChatResponse, LLMProvider, ToolCall
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ class FakeProvider(LLMProvider):
         self._responses.append(response)
 
     async def chat(self, messages, tools=None, **kwargs):
-        from aaagent.providers.base import ChatResponse as _CR
+        from aaagent.core.types import ChatResponse as _CR
 
         self.chat_calls.append((list(messages), tools))
         if not self._responses:
@@ -57,7 +57,7 @@ def fake_profile_provider():
             self.calls = 0
 
         async def chat(self, messages, tools=None, **kwargs):
-            from aaagent.providers.base import ChatResponse
+            from aaagent.core.types import ChatResponse
 
             self.calls += 1
             return ChatResponse(content="# 用户画像\n- consolidated")

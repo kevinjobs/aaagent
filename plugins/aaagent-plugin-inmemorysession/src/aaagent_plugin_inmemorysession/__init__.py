@@ -9,7 +9,7 @@ from aaagent.core.plugin import SessionStoreFactory
 from aaagent.core.session import Session, SessionStore
 
 if TYPE_CHECKING:
-    from aaagent.providers.base import LLMProvider
+    from aaagent.core.types import LLMProvider
 
 
 class InMemorySessionStore(SessionStore):

@@ -23,7 +23,7 @@ class _GoodProvider(Provider):
         super().__init__(config)
 
     async def chat(self, messages, tools=None, **kwargs):
-        from aaagent.providers.base import ChatResponse
+        from aaagent.core.types import ChatResponse
 
         return ChatResponse(content="ok")
 
@@ -44,7 +44,7 @@ class _OverrideProvider(Provider):
     type = "x"
 
     async def chat(self, messages, tools=None, **kwargs):
-        from aaagent.providers.base import ChatResponse
+        from aaagent.core.types import ChatResponse
 
         return ChatResponse(content="override")
 

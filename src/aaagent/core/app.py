@@ -30,8 +30,8 @@ from aaagent.core.plugin import (
 from aaagent.core.prompt import PromptBuilder
 from aaagent.core.ratelimit import TokenBucket
 from aaagent.core.session import SessionStore
-from aaagent.providers.base import LLMProvider, PROVIDER_TYPE_REGISTRY
-from aaagent.tools.registry import ToolRegistry
+from aaagent.core.types import LLMProvider, PROVIDER_TYPE_REGISTRY
+from aaagent.core.tool_registry import ToolRegistry
 
 logger = logging.getLogger("aaagent")
 
@@ -262,7 +262,7 @@ class Application:
         instance = plugin_cls(plugin_cfg)
 
         # Adapt to legacy LLMProvider interface for the rest of the code
-        from aaagent.providers.base import LLMProvider as _LP
+        from aaagent.core.types import LLMProvider as _LP
 
         if isinstance(instance, _LP):
             return instance

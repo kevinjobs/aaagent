@@ -5,7 +5,7 @@ import pytest
 from aaagent.core.app import Application
 from aaagent.core.bus import EventBus
 from aaagent.core.message import Message
-from aaagent.providers.base import ChatResponse, LLMProvider, ToolCall
+from aaagent.core.types import ChatResponse, LLMProvider, ToolCall
 from aaagent_plugin_markdownstore import MarkdownMemoryStore
 
 
