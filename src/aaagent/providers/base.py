@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 
 @dataclass
@@ -32,6 +32,22 @@ class LLMProvider(ABC):
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> ChatResponse: ...
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, str]],
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Yield text chunks for a streaming reply.
+
+        Default raises NotImplementedError; subclasses with native
+        streaming support should override. Streaming with tool calls is
+        not supported — fall back to chat() in that case.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support stream_chat"
+        )
+        yield ""  # pragma: no cover — makes this an async generator
 
 
 PROVIDER_TYPE_REGISTRY: dict[str, type[LLMProvider]] = {}

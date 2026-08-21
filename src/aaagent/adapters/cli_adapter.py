@@ -27,6 +27,8 @@ class CliAdapter(IMAdapter):
         self._bus.on("message_to_send", self._on_message_to_send)
         self._bus.on("tool_start", self._on_tool_start)
         self._bus.on("tool_result", self._on_tool_result)
+        self._bus.on("stream_token", self._on_stream_token)
+        self._streaming = False
 
     async def start(self) -> None:
         self._running = True
@@ -43,7 +45,17 @@ class CliAdapter(IMAdapter):
 
     async def _on_message_to_send(self, msg: Message) -> None:
         if msg.platform == "cli":
+            if self._streaming:
+                self._console.print()
+                self._streaming = False
             self._print_assistant(msg.content)
+
+    async def _on_stream_token(self, token: str) -> None:
+        # stream_token fires before the final message_to_send; we just
+        # print tokens inline. The final message_to_send handler will
+        # print the markdown-formatted body after.
+        self._streaming = True
+        self._console.print(token, end="")
 
     async def _on_tool_start(self, data: dict[str, Any]) -> None:
         if data.get("platform") != "cli":

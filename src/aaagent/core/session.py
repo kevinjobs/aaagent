@@ -139,6 +139,10 @@ class SessionStore:
             session = self.get_or_create(session_id)
             return session.get_context()
 
+    async def get_session(self, session_id: str) -> "Session":
+        async with self._get_lock(session_id):
+            return self.get_or_create(session_id)
+
     def list_sessions(self) -> list[Session]:
         return list(self._sessions.values())
 

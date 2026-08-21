@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI
 
@@ -65,3 +65,27 @@ class OpenAICompatibleProvider(LLMProvider):
             ]
 
         return ChatResponse(content=msg.content or "", tool_calls=tool_calls)
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, str]],
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        if kwargs.get("tools"):
+            raise NotImplementedError(
+                "stream_chat does not support tool calls; use chat() instead"
+            )
+        kwargs.pop("tools", None)
+        client = self._get_client()
+        stream = await client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            stream=True,
+            **kwargs,
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
