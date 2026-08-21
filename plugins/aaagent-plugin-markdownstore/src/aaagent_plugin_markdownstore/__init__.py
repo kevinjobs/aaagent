@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +23,71 @@ logger = logging.getLogger("aaagent.markdownstore")
 _DATE_FMT = "%Y-%m-%d"
 _TIMESTAMP_FMT = "%Y-%m-%d %H:%M"
 _TOKEN_RE = re.compile(r"[\u4e00-\u9fff]|[a-zA-Z]{2,}|\d{2,}")
+_SESSION_RE = re.compile(r"\s*\(session:\s*([^)]+)\)\s*$")
+_TAGS_RE = re.compile(r"^\[([^\]]*)\]\s*")
+_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s*")
+
+_BONUS_PER_TAG = 0.15
+_BONUS_CAP = 0.3
+_RECENCY_FLOOR = 0.1
+
+
+@dataclass
+class FactEntry:
+    """A single parsed memory fact line (`- ...` in a facts/profile file)."""
+
+    raw: str
+    source: str
+    content: str = ""
+    tags: frozenset[str] = field(default_factory=frozenset)
+    ts: float | None = None
+    session: str = ""
+
+
+def _parse_fact_line(line: str, source: str) -> FactEntry | None:
+    """Parse a `- ...` line into a FactEntry (None for headers/blank lines)."""
+    raw = line.strip()
+    if not raw or not raw.startswith("- "):
+        return None
+
+    session = ""
+    m = _SESSION_RE.search(raw)
+    if m:
+        session = m.group(1)
+        raw = raw[: m.start()]
+
+    body = raw[2:].strip()
+
+    ts: float | None = None
+    m = _TS_RE.match(body)
+    if m:
+        try:
+            ts = time.mktime(time.strptime(m.group(1), _TIMESTAMP_FMT))
+            body = body[m.end():].strip()
+        except ValueError:
+            ts = None
+
+    tags: frozenset[str] = frozenset()
+    m = _TAGS_RE.match(body)
+    if m:
+        tags = frozenset(
+            t.strip() for t in m.group(1).split(",") if t.strip()
+        )
+        body = body[m.end():].strip()
+
+    content = body
+    return FactEntry(
+        raw=line.strip(),
+        source=source,
+        content=content,
+        tags=tags,
+        ts=ts,
+        session=session,
+    )
+
+
+def _tokenize(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.lower())
 
 
 class MarkdownMemoryStore(MemoryStore):
@@ -35,7 +103,16 @@ class MarkdownMemoryStore(MemoryStore):
     lock is not held during the network call to the LLM.
     """
 
-    def __init__(self, data_dir: str = "data/memories", base_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: str = "data/memories",
+        base_path: Path | None = None,
+        relevance_weight: float = 0.7,
+        recency_weight: float = 0.3,
+        recency_decay: float = 0.1,
+        tag_bonus: float = _BONUS_PER_TAG,
+        tag_bonus_cap: float = _BONUS_CAP,
+    ) -> None:
         if base_path is not None:
             base = Path(base_path).resolve()
         else:
@@ -49,6 +126,12 @@ class MarkdownMemoryStore(MemoryStore):
         self._profile_path = self._data_dir / "profile.md"
         self._archive_path = self._data_dir / "archive.md"
         self._lock = __import__("asyncio").Lock()
+
+        self._relevance_weight = float(relevance_weight)
+        self._recency_weight = float(recency_weight)
+        self._recency_decay = float(recency_decay)
+        self._tag_bonus = float(tag_bonus)
+        self._tag_bonus_cap = float(tag_bonus_cap)
 
         self._facts_dir.mkdir(parents=True, exist_ok=True)
         if not self._profile_path.exists():
@@ -94,27 +177,91 @@ class MarkdownMemoryStore(MemoryStore):
         logger.info("Memorized: %s", content[:80])
         return content
 
-    async def recall(self, query: str, top_k: int = 10) -> str:
-        query_lower = query.lower()
-        results: list[tuple[str, str, float]] = []
+    async def recall(
+        self, query: str, top_k: int = 10, tags: list[str] | None = None
+    ) -> str:
+        entries = await self._load_entries()
 
-        async with self._lock:
-            fact_files = [p for p in await aiofiles.os.listdir(self._facts_dir) if p.endswith(".md")]
-            for name in fact_files:
-                p = self._facts_dir / name
-                results.extend(await self._search_file(p, query_lower))
-            results.extend(await self._search_file(self._profile_path, query_lower))
+        q_tags: set[str] = set(tags or [])
+        if q_tags:
+            entries = [e for e in entries if q_tags & e.tags]
+            if not entries:
+                return "没有找到相关记忆。"
 
-        results.sort(key=lambda x: x[2], reverse=True)
-
-        if not results:
+        q_tokens = _tokenize(query)
+        if not q_tokens:
             return "没有找到相关记忆。"
 
-        lines: list[str] = []
-        for source, line, _score in results[:top_k]:
-            lines.append(f"- [{source}] {line}")
+        idf = self._compute_idf(entries, q_tokens)
+        denom = sum(idf.values()) or 1.0
+        now = time.time()
 
+        matches: list[tuple[str, str, float]] = []
+        for e in entries:
+            e_tokens = set(_tokenize(e.content))
+            lex = sum(idf[t] for t in q_tokens if t in e_tokens) / denom
+            if lex <= 0:
+                continue
+            rec = self._recency_score(e.ts, now)
+            bonus = min(len(q_tags & e.tags) * self._tag_bonus, self._tag_bonus_cap)
+            combined = (
+                self._relevance_weight * lex + self._recency_weight * rec + bonus
+            )
+            matches.append((e.source, e.raw, combined))
+
+        matches.sort(key=lambda x: x[2], reverse=True)
+
+        if not matches:
+            return "没有找到相关记忆。"
+
+        lines = [f"- [{source}] {raw}" for source, raw, _score in matches[:top_k]]
         return "\n".join(lines)
+
+    @staticmethod
+    def _compute_idf(entries: list[FactEntry], q_tokens: list[str]) -> dict[str, float]:
+        n_docs = max(1, len(entries))
+        df: Counter[str] = Counter()
+        for e in entries:
+            for t in set(_tokenize(e.content)):
+                df[t] += 1
+        return {
+            t: math.log(1 + (n_docs - df[t] + 0.5) / (df[t] + 0.5))
+            for t in q_tokens
+        }
+
+    def _recency_score(self, ts: float | None, now: float) -> float:
+        if ts is None:
+            return 0.5
+        age_hours = max(0.0, (now - ts) / 3600)
+        return max(_RECENCY_FLOOR, math.exp(-self._recency_decay * age_hours / 24))
+
+    async def _load_entries(self) -> list[FactEntry]:
+        entries: list[FactEntry] = []
+        async with self._lock:
+            if await aiofiles.os.path.isdir(self._facts_dir):
+                for name in await aiofiles.os.listdir(self._facts_dir):
+                    if not name.endswith(".md"):
+                        continue
+                    entries.extend(await self._read_entries(self._facts_dir / name))
+            entries.extend(await self._read_entries(self._profile_path))
+        return entries
+
+    async def _read_entries(self, path: Path) -> list[FactEntry]:
+        if not await aiofiles.os.path.exists(path):
+            return []
+        try:
+            async with aiofiles.open(path, encoding="utf-8") as f:
+                text = await f.read()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to read %s: %s", path, e)
+            return []
+        source = "profile" if path.name == "profile.md" else path.stem
+        result: list[FactEntry] = []
+        for line in text.split("\n"):
+            entry = _parse_fact_line(line, source)
+            if entry is not None:
+                result.append(entry)
+        return result
 
     async def recall_profile(self) -> str:
         import asyncio
@@ -127,37 +274,6 @@ class MarkdownMemoryStore(MemoryStore):
         if content == "# 用户画像" or not content:
             return ""
         return content
-
-    async def _search_file(self, path: Path, query: str) -> list[tuple[str, str, float]]:
-        if not await aiofiles.os.path.exists(path):
-            return []
-        results: list[tuple[str, str, float]] = []
-        try:
-            async with aiofiles.open(path, encoding="utf-8") as f:
-                text = await f.read()
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if not line.startswith("- "):
-                    continue
-                score = self._match_score(line.lower(), query)
-                if score > 0:
-                    results.append((path.stem, line, score))
-        except Exception as e:
-            logger.warning("Failed to search %s: %s", path, e)
-        return results
-
-    @staticmethod
-    def _match_score(text: str, query: str) -> float:
-        if not query:
-            return 0.0
-        q_tokens = _TOKEN_RE.findall(query.lower())
-        if not q_tokens:
-            return 0.0
-        t_tokens = set(_TOKEN_RE.findall(text.lower()))
-        hits = sum(1 for qt in q_tokens if qt in t_tokens)
-        return hits / len(q_tokens)
 
     async def archive_session(
         self, session_id: str, summary: str, start_time: float, end_time: float
@@ -235,7 +351,14 @@ class MarkdownMemoryStoreFactory(MemoryStoreFactory):
         data_dir = config.get("data_dir", "data/memories")
         base_path_raw = config.get("base_path")
         base_path = Path(base_path_raw) if base_path_raw else None
-        return MarkdownMemoryStore(data_dir=data_dir, base_path=base_path)
+        recall_cfg = config.get("recall", {}) or {}
+        return MarkdownMemoryStore(
+            data_dir=data_dir,
+            base_path=base_path,
+            relevance_weight=float(recall_cfg.get("relevance_weight", 0.7)),
+            recency_weight=float(recall_cfg.get("recency_weight", 0.3)),
+            recency_decay=float(recall_cfg.get("recency_decay", 0.1)),
+        )
 
 
 __all__ = ["MarkdownMemoryStore", "MarkdownMemoryStoreFactory"]

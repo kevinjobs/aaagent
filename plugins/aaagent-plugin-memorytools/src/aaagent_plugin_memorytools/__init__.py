@@ -23,7 +23,11 @@ def register_memory_tools(registry: Any, memory_store: Any | None = None) -> Non
             return "Error: memory store not initialized"
         store = store_ref[0]
         query = args["query"]
-        result = await store.recall(query=query)
+        top_k = int(args.get("top_k", 10) or 10)
+        tags: list[str] | None = args.get("tags") or None
+        if tags is not None and not isinstance(tags, list):
+            tags = [tags]
+        result = await store.recall(query=query, top_k=top_k, tags=tags)
         return result
 
     registry.register(
@@ -56,10 +60,14 @@ def register_memory_tools(registry: Any, memory_store: Any | None = None) -> Non
                     "type": "string",
                     "description": "搜索关键词，越具体越好",
                 },
+                "top_k": {
+                    "type": "integer",
+                    "description": "最多返回的记忆条数（默认 10）",
+                },
                 "tags": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "按标签过滤（可选）",
+                    "description": "按标签过滤（可选），如 ['project']",
                 },
             },
             "required": ["query"],
