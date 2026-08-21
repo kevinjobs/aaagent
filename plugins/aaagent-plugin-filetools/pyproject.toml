@@ -1,0 +1,16 @@
+[project]
+name = "aaagent-plugin-filetools"
+version = "0.1.0"
+description = "File system tools plugin for aaagent (read/write/list/grep)"
+requires-python = ">=3.11"
+dependencies = ["aaagent"]
+
+[project.entry-points."aaagent.tools"]
+file = "aaagent_plugin_filetools:FileToolsPlugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aaagent_plugin_filetools"]

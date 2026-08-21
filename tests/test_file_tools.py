@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from aaagent.tools.file_tools import (
+from aaagent_plugin_filetools import (
     _ensure_allowed,
     list_dir,
     read_file,

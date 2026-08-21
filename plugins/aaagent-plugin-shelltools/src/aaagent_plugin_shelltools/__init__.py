@@ -7,6 +7,8 @@ import shlex
 import unicodedata
 from typing import Any
 
+from aaagent.core.plugin import ToolPlugin
+
 logger = logging.getLogger("aaagent.tools.shell")
 
 
@@ -139,30 +141,40 @@ async def run_shell(args: dict[str, Any]) -> str:
         return f"Error executing shell command: {e}"
 
 
-def register_shell_tools(registry: Any) -> None:
-    registry.register(
-        name="run_shell",
-        description=(
-            "Execute a shell command. Use this to run CLI tools, scripts, "
-            "or any shell operation. Has a timeout and output size limit."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to execute",
+class ShellToolsPlugin(ToolPlugin):
+    name = "shell"
+
+    def register(self, registry: Any, config: dict[str, Any]) -> None:
+        tools_cfg = config.get("tools", {}) if isinstance(config, dict) else {}
+        shell_cfg = tools_cfg.get("shell", {}) if isinstance(tools_cfg, dict) else {}
+        if not shell_cfg.get("enabled", True):
+            return
+        registry.register(
+            name="run_shell",
+            description=(
+                "Execute a shell command. Use this to run CLI tools, scripts, "
+                "or any shell operation. Has a timeout and output size limit."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to execute",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default 30, max 120)",
+                    },
+                    "max_output": {
+                        "type": "integer",
+                        "description": "Maximum output characters (default 4096, max 32768)",
+                    },
                 },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Timeout in seconds (default 30, max 120)",
-                },
-                "max_output": {
-                    "type": "integer",
-                    "description": "Maximum output characters (default 4096, max 32768)",
-                },
+                "required": ["command"],
             },
-            "required": ["command"],
-        },
-        handler=run_shell,
-    )
+            handler=run_shell,
+        )
+
+
+__all__ = ["ShellToolsPlugin"]

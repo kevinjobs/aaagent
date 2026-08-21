@@ -144,7 +144,7 @@ class _BuiltinMemoryTools(ToolPlugin):
 
 
 BUILTIN_PROVIDERS: dict[str, str] = {
-    "openai_compatible": "aaagent.core._builtin_wrappers:_BuiltinOpenAIProvider",
+    "openai_compatible": "aaagent_plugin_openai:OpenAICompatibleProvider",
 }
 
 BUILTIN_ADAPTERS: dict[str, str] = {
@@ -154,9 +154,9 @@ BUILTIN_ADAPTERS: dict[str, str] = {
 }
 
 BUILTIN_TOOLS: dict[str, str] = {
-    "file": "aaagent.core._builtin_wrappers:_BuiltinFileTools",
-    "shell": "aaagent.core._builtin_wrappers:_BuiltinShellTools",
-    "memory": "aaagent.core._builtin_wrappers:_BuiltinMemoryTools",
+    "file": "aaagent_plugin_filetools:FileToolsPlugin",
+    "shell": "aaagent_plugin_shelltools:ShellToolsPlugin",
+    "memory": "aaagent_plugin_memorytools:MemoryToolsPlugin",
 }
 
 BUILTIN_SESSIONS: dict[str, str] = {

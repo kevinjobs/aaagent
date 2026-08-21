@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from aaagent.tools.shell_tools import _is_denied, run_shell
+from aaagent_plugin_shelltools import _is_denied, run_shell
 
 
 DENIED_COMMANDS = [

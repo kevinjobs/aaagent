@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aaagent.core.plugin import ToolPlugin
+
 
 def register_memory_tools(registry: Any, memory_store: Any | None = None) -> None:
     """Register remember / recall tools that operate on a MemoryStore."""
@@ -64,3 +66,23 @@ def register_memory_tools(registry: Any, memory_store: Any | None = None) -> Non
         },
         handler=_recall,
     )
+
+
+class MemoryToolsPlugin(ToolPlugin):
+    name = "memory"
+    uses_memory_store = True
+
+    def __init__(self) -> None:
+        self._memory_store: Any = None
+
+    def set_memory(self, store: Any) -> None:
+        self._memory_store = store
+
+    def register(self, registry: Any, config: dict[str, Any]) -> None:
+        memory_cfg = config.get("memory", {}) if isinstance(config, dict) else {}
+        if not memory_cfg.get("enabled", True):
+            return
+        register_memory_tools(registry, memory_store=self._memory_store)
+
+
+__all__ = ["MemoryToolsPlugin"]
