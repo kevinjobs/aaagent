@@ -7,3 +7,6 @@ __all__ = [
     "ToolCall",
     "register_provider_type",
 ]
+
+# Concrete provider implementations have moved to aaagent-plugin-* packages.
+# See e.g. aaagent_plugin_openai.OpenAICompatibleProvider.

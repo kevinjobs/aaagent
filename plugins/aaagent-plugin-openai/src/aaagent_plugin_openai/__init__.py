@@ -6,24 +6,33 @@ from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI
 
-from aaagent.providers.base import ChatResponse, LLMProvider, ToolCall, register_provider_type
+from aaagent.core.plugin import Provider
+from aaagent.providers.base import ChatResponse, ToolCall
 
-logger = logging.getLogger("aaagent.provider")
+logger = logging.getLogger("aaagent.provider.openai")
 
 
-@register_provider_type("openai_compatible")
-class OpenAICompatibleProvider(LLMProvider):
-    def __init__(self, name: str, config: dict[str, Any]) -> None:
-        super().__init__(name, config)
+class OpenAICompatibleProvider(Provider):
+    """OpenAI-compatible LLM provider.
+
+    Works against any OpenAI-style Chat Completions endpoint (OpenAI,
+    DeepSeek, Qwen, MiniMax, cntoken, etc.) by configuring base_url.
+    Supports streaming via stream_chat for the no-tools path.
+    """
+
+    type = "openai_compatible"
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        super().__init__(config)
         api_key = config.get("api_key", "")
-        if api_key.startswith("${") and api_key.endswith("}"):
+        if isinstance(api_key, str) and api_key.startswith("${") and api_key.endswith("}"):
             env_var = api_key[2:-1]
             api_key = os.environ.get(env_var, "")
 
         if not api_key:
             logger.error(
                 "Provider '%s': api_key missing (set env var referenced in config)",
-                name,
+                config.get("_name", "openai_compatible"),
             )
 
         self._api_key = api_key or None
@@ -38,7 +47,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     async def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> ChatResponse:
@@ -68,7 +77,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     async def stream_chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         if kwargs.get("tools"):
@@ -89,3 +98,6 @@ class OpenAICompatibleProvider(LLMProvider):
             delta = chunk.choices[0].delta.content
             if delta:
                 yield delta
+
+
+__all__ = ["OpenAICompatibleProvider"]
