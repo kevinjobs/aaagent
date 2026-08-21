@@ -91,6 +91,23 @@ class ToolPlugin(abc.ABC):
     ) -> None:
         ...
 
+    async def establish(
+        self,
+        registry: "ToolRegistry",
+        config: dict[str, Any],
+    ) -> None:
+        """Optional async setup (e.g. connect to external services).
+
+        Called once by Application.run() before adapters start, after the
+        synchronous `register()` phase. Backed by a no-op default so tool
+        plugins that only need sync registration can ignore it.
+        """
+        return None
+
+    async def close(self) -> None:
+        """Optional async cleanup invoked at Application.stop()."""
+        return None
+
 
 class IMAdapter(abc.ABC):
     """IM channel adapter plugin interface."""

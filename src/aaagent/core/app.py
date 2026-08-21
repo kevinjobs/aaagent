@@ -144,6 +144,7 @@ class Application:
         self._memory = memory
         _archive_hours = self._config.get("memory", {}).get("archive_after_hours", 24)
         self._archive_interval = float(_archive_hours or 24) * 3600
+        self._tool_plugins: list[Any] = []
         self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
         rate_cfg = self._config.get("rate_limit", {})
@@ -183,7 +184,9 @@ class Application:
 
         registry = ToolRegistry(allowed_dirs=allowed_dirs)
 
-        # Instantiate tool plugin classes via PluginManager, then register
+        # Instantiate tool plugin classes via PluginManager, then register.
+        # Instances are retained so async establish/close hooks can be driven.
+        self._tool_plugins: list[Any] = []
         for plugin_cls in self._plugins.get_tool_classes():
             try:
                 plugin = plugin_cls()
@@ -194,6 +197,7 @@ class Application:
                     e,
                 )
                 continue
+            self._tool_plugins.append(plugin)
             try:
                 if hasattr(plugin, "set_memory"):
                     plugin.set_memory(self._memory)
@@ -304,6 +308,15 @@ class Application:
 
     def _setup_event_handlers(self) -> None:
         self._bus.on("message_received", self._on_message_received)
+
+    async def _establish_tool_plugins(self) -> None:
+        for plugin in self._tool_plugins:
+            try:
+                await plugin.establish(self._tool_registry, self._config)
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "Tool plugin %s.establish() failed: %s", type(plugin).__name__, e
+                )
 
     async def _on_message_received(self, msg: Message) -> None:
         if self._provider is None:
@@ -492,6 +505,7 @@ class Application:
         self._health_task = asyncio.create_task(self._health_check_loop())
         if self._memory is not None and self._archive_interval > 0:
             self._archive_task = asyncio.create_task(self._archive_sweep_loop())
+        await self._establish_tool_plugins()
         try:
             tasks = [adapter.start() for adapter in self._adapters]
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -576,6 +590,19 @@ class Application:
     async def stop(self) -> None:
         self._cancel_background_tasks()
         await self._memory.close()
+        for plugin in getattr(self, "_tool_plugins", []):
+            closer = getattr(plugin, "close", None)
+            if closer is None:
+                continue
+            try:
+                if asyncio.iscoroutinefunction(closer):
+                    await closer()
+                else:
+                    closer()
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "Error closing tool plugin %s: %s", type(plugin).__name__, e
+                )
         for adapter in self._adapters:
             try:
                 await adapter.stop()

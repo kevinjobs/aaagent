@@ -10,6 +10,13 @@ dependencies = [
     "aiofiles>=23.2",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+    "fastmcp>=2",
+]
+
 [project.scripts]
 aaagent = "aaagent.cli:app"
 
@@ -26,6 +33,7 @@ members = [
     "plugins/aaagent-plugin-filetools",
     "plugins/aaagent-plugin-shelltools",
     "plugins/aaagent-plugin-memorytools",
+    "plugins/aaagent-plugin-mcp",
     "plugins/aaagent-plugin-cliadapter",
     "plugins/aaagent-plugin-feishu",
     "plugins/aaagent-plugin-inmemorysession",
@@ -38,6 +46,7 @@ aaagent-plugin-openai = { workspace = true }
 aaagent-plugin-filetools = { workspace = true }
 aaagent-plugin-shelltools = { workspace = true }
 aaagent-plugin-memorytools = { workspace = true }
+aaagent-plugin-mcp = { workspace = true }
 aaagent-plugin-cliadapter = { workspace = true }
 aaagent-plugin-feishu = { workspace = true }
 aaagent-plugin-inmemorysession = { workspace = true }
