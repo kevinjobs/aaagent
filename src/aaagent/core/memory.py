@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import aiofiles
+import aiofiles.os
 
 if TYPE_CHECKING:
     from aaagent.providers.base import LLMProvider
@@ -16,14 +19,17 @@ _TIMESTAMP_FMT = "%Y-%m-%d %H:%M"
 
 
 class MemoryStore:
-    def __init__(self, data_dir: str = "data/memories") -> None:
-        self._data_dir = Path(data_dir)
+    def __init__(self, data_dir: str = "data/memories", base_path: Path | None = None) -> None:
+        base = Path(base_path) if base_path else Path.cwd()
+        raw = Path(data_dir)
+        self._data_dir = raw if raw.is_absolute() else base / raw
         self._facts_dir = self._data_dir / "facts"
         self._profile_path = self._data_dir / "profile.md"
         self._archive_path = self._data_dir / "archive.md"
 
-        self._facts_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = asyncio.Lock()
 
+        self._facts_dir.mkdir(parents=True, exist_ok=True)
         if not self._profile_path.exists():
             self._profile_path.write_text("# 用户画像\n\n", encoding="utf-8")
         if not self._archive_path.exists():
@@ -33,11 +39,12 @@ class MemoryStore:
         date_str = time.strftime(_DATE_FMT)
         return self._facts_dir / f"{date_str}.md"
 
-    def _ensure_today_facts(self) -> None:
+    async def _ensure_today_facts(self) -> None:
         p = self._today_facts_path()
-        if not p.exists():
+        if not await aiofiles.os.path.exists(p):
             date_str = time.strftime(_DATE_FMT)
-            p.write_text(f"# 事实记录 - {date_str}\n\n", encoding="utf-8")
+            async with aiofiles.open(p, "w", encoding="utf-8") as f:
+                await f.write(f"# 事实记录 - {date_str}\n\n")
 
     async def remember(
         self,
@@ -48,19 +55,18 @@ class MemoryStore:
         tags_str = f"[{', '.join(tags)}]" if tags else ""
         ts = time.strftime(_TIMESTAMP_FMT)
 
-        if tags and "user" in tags:
-            profile_entry = f"- {ts} {content}\n"
-            with open(self._profile_path, "a", encoding="utf-8") as f:
-                f.write(profile_entry)
+        async with self._lock:
+            if tags and "user" in tags:
+                async with aiofiles.open(self._profile_path, "a", encoding="utf-8") as f:
+                    await f.write(f"- {ts} {content}\n")
 
-        self._ensure_today_facts()
-        fact_entry = f"- {ts} {tags_str} {content}"
-        if session_id:
-            fact_entry += f" (session: {session_id})"
-        fact_entry += "\n"
-
-        with open(self._today_facts_path(), "a", encoding="utf-8") as f:
-            f.write(fact_entry)
+            await self._ensure_today_facts()
+            fact_entry = f"- {ts} {tags_str} {content}"
+            if session_id:
+                fact_entry += f" (session: {session_id})"
+            fact_entry += "\n"
+            async with aiofiles.open(self._today_facts_path(), "a", encoding="utf-8") as f:
+                await f.write(fact_entry)
 
         logger.info("Memorized: %s", content[:80])
         return content
@@ -69,12 +75,12 @@ class MemoryStore:
         query_lower = query.lower()
         results: list[tuple[str, str, float]] = []
 
-        for p in sorted(self._facts_dir.iterdir()):
-            if p.suffix != ".md":
-                continue
-            results.extend(self._search_file(p, query_lower))
-
-        results.extend(self._search_file(self._profile_path, query_lower))
+        async with self._lock:
+            fact_files = [p for p in await aiofiles.os.listdir(self._facts_dir) if p.endswith(".md")]
+            for name in fact_files:
+                p = self._facts_dir / name
+                results.extend(await self._search_file(p, query_lower))
+            results.extend(await self._search_file(self._profile_path, query_lower))
 
         results.sort(key=lambda x: x[2], reverse=True)
 
@@ -88,19 +94,22 @@ class MemoryStore:
         return "\n".join(lines)
 
     async def recall_profile(self) -> str:
-        if not self._profile_path.exists():
-            return ""
-        content = self._profile_path.read_text(encoding="utf-8").strip()
+        async with self._lock:
+            if not self._profile_path.exists():
+                return ""
+            async with aiofiles.open(self._profile_path, encoding="utf-8") as f:
+                content = (await f.read()).strip()
         if content == "# 用户画像" or not content:
             return ""
         return content
 
-    def _search_file(self, path: Path, query: str) -> list[tuple[str, str, float]]:
-        if not path.exists():
+    async def _search_file(self, path: Path, query: str) -> list[tuple[str, str, float]]:
+        if not await aiofiles.os.path.exists(path):
             return []
         results: list[tuple[str, str, float]] = []
         try:
-            text = path.read_text(encoding="utf-8")
+            async with aiofiles.open(path, encoding="utf-8") as f:
+                text = await f.read()
             for line in text.split("\n"):
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -116,13 +125,17 @@ class MemoryStore:
 
     @staticmethod
     def _match_score(text: str, query: str) -> float:
+        import re
+
         if not query:
             return 0.0
-        words = query.split()
-        if not words:
+        token_re = re.compile(r"[\u4e00-\u9fff]|[a-zA-Z]{2,}|\d{2,}")
+        q_tokens = token_re.findall(query.lower())
+        if not q_tokens:
             return 0.0
-        matches = sum(1 for w in words if w in text)
-        return matches / len(words)
+        t_tokens = set(token_re.findall(text.lower()))
+        hits = sum(1 for qt in q_tokens if qt in t_tokens)
+        return hits / len(q_tokens)
 
     async def archive_session(
         self, session_id: str, summary: str, start_time: float, end_time: float
@@ -134,22 +147,30 @@ class MemoryStore:
             f"- 时间：{start_str} - {end_str}\n"
             f"- 摘要：{summary}\n\n"
         )
-        with open(self._archive_path, "a", encoding="utf-8") as f:
-            f.write(entry)
+        async with self._lock:
+            async with aiofiles.open(self._archive_path, "a", encoding="utf-8") as f:
+                await f.write(entry)
 
-    def _profile_entry_count(self) -> int:
-        if not self._profile_path.exists():
-            return 0
-        text = self._profile_path.read_text(encoding="utf-8")
+    async def _profile_entry_count(self) -> int:
+        async with self._lock:
+            if not self._profile_path.exists():
+                return 0
+            async with aiofiles.open(self._profile_path, encoding="utf-8") as f:
+                text = await f.read()
         return sum(1 for line in text.split("\n") if line.strip().startswith("- "))
 
     async def maybe_consolidate_profile(
         self, provider: Any, threshold: int = 15
     ) -> None:
-        if self._profile_entry_count() < threshold:
+        if await self._profile_entry_count() < threshold:
             return
 
-        content = self._profile_path.read_text(encoding="utf-8").strip()
+        async with self._lock:
+            if not self._profile_path.exists():
+                return
+            async with aiofiles.open(self._profile_path, encoding="utf-8") as f:
+                content = (await f.read()).strip()
+
         prompt = (
             "请将以下用户画像条目合并为一段简洁、无重复、无矛盾的用户画像。\n"
             "保留最新信息，去除过时条目。用 Markdown 列表格式输出，"
@@ -161,8 +182,13 @@ class MemoryStore:
             result = await provider.chat([{"role": "user", "content": prompt}])
             consolidated = result.content.strip()
             if consolidated and "# 用户画像" in consolidated:
-                self._profile_path.write_text(consolidated + "\n", encoding="utf-8")
-                logger.info("Profile consolidated (%d entries -> merged)", self._profile_entry_count())
+                async with self._lock:
+                    async with aiofiles.open(self._profile_path, "w", encoding="utf-8") as f:
+                        await f.write(consolidated + "\n")
+                logger.info(
+                    "Profile consolidated (%d entries -> merged)",
+                    await self._profile_entry_count(),
+                )
             else:
                 logger.warning("Profile consolidation output invalid, skipping")
         except Exception as e:

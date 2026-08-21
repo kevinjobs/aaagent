@@ -2,30 +2,91 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
+import unicodedata
 from typing import Any
 
 logger = logging.getLogger("aaagent.tools.shell")
 
-_DENY_LIST = [
-    "rm -rf /",
-    "rm -rf /*",
-    "dd if=",
-    "mkfs.",
-    "format ",
-    ":(){ :|:& };:",
-    "> /dev/sda",
-    "> /dev/hda",
-    "chmod 777 /",
-    "chown root:root /",
-]
+
+def _normalize(cmd: str) -> str:
+    s = unicodedata.normalize("NFKC", cmd)
+    s = s.replace("\\", "")
+    s = re.sub(r"\s+", " ", s)
+    return s.lower().strip()
+
+
+def _rules() -> list[tuple[set[str], Any, str]]:
+    return [
+        (
+            {"rm"},
+            lambda t: any(flag in t for flag in ("-rf", "-fr"))
+            and any(x in ("/", "/*") for x in t),
+            "rm -rf with root path",
+        ),
+        (
+            {"dd"},
+            lambda t: any(
+                x.startswith("if=") and (x[3:].startswith("/") or ":\\" in x[3:])
+                for x in t
+            ),
+            "dd with absolute input",
+        ),
+        (
+            {"mkfs", "mkfs.bfs", "mkfs.cramfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4",
+             "mkfs.jfs", "mkfs.minix", "mkfs.msdos", "mkfs.ntfs", "mkfs.reiser4",
+             "mkfs.vfat", "mkfs.xfs"},
+            lambda t: True,
+            "filesystem format",
+        ),
+        (
+            {"format"},
+            lambda t: True,
+            "format command",
+        ),
+        (
+            {"chmod"},
+            lambda t: "777" in t and any(x in ("/", "/*") for x in t),
+            "chmod 777 on root",
+        ),
+        (
+            {"chown"},
+            lambda t: any("root:root" in x for x in t)
+            and any(x in ("/", "/*") for x in t),
+            "chown root:root on root",
+        ),
+    ]
 
 
 def _is_denied(command: str) -> str | None:
-    cmd_lower = command.lower().strip()
-    for denied in _DENY_LIST:
-        if denied.lower() in cmd_lower:
-            return denied
+    normalized = _normalize(command)
+    if ":(){" in command or ":(){" in normalized:
+        return "fork bomb pattern"
+
+    try:
+        tokens = shlex.split(normalized)
+    except ValueError:
+        tokens = normalized.split()
+
+    if not tokens:
+        return None
+
+    for head, predicate, description in _rules():
+        for i, tok in enumerate(tokens):
+            if tok in head and predicate(tokens[i:]):
+                return description
+
+    for i, tok in enumerate(tokens):
+        if tok in {">", ">>"}:
+            for target in tokens[i + 1:]:
+                if (
+                    target.startswith("/dev/sd")
+                    or target.startswith("/dev/hd")
+                    or target.startswith("/dev/nvme")
+                ):
+                    return "redirect to block device"
+
     return None
 
 
@@ -36,7 +97,7 @@ async def run_shell(args: dict[str, Any]) -> str:
 
     denied = _is_denied(command)
     if denied:
-        return f"Error: command denied (matches blacklist pattern: '{denied}')"
+        return f"Error: command denied by safety policy ({denied})"
 
     try:
         proc = await asyncio.create_subprocess_shell(

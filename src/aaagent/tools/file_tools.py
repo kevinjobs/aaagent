@@ -9,56 +9,53 @@ logger = logging.getLogger("aaagent.tools.file")
 
 
 def _ensure_allowed(path: str, allowed_dirs: list[str] | None) -> str:
-    resolved = Path(path).resolve()
     if not allowed_dirs:
-        return str(resolved)
+        raise PermissionError("no allowed_dirs configured")
+    resolved = Path(path).resolve()
     for d in allowed_dirs:
+        base = Path(d).resolve()
         try:
-            Path(d).resolve().relative_to(resolved)
+            resolved.relative_to(base)
         except ValueError:
-            try:
-                resolved.relative_to(Path(d).resolve())
-            except ValueError:
-                continue
-            return str(resolved)
+            continue
         return str(resolved)
     raise PermissionError(f"Path '{path}' is not in allowed directories: {allowed_dirs}")
 
 
 async def read_file(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
-    path = _ensure_allowed(args["path"], allowed_dirs)
     try:
+        path = _ensure_allowed(args["path"], allowed_dirs)
         with open(path, encoding="utf-8", errors="replace") as f:
             content = f.read()
         return content
     except FileNotFoundError:
-        return f"Error: file not found: {path}"
+        return f"Error: file not found: {args['path']}"
     except IsADirectoryError:
-        return f"Error: path is a directory: {path}"
-    except PermissionError:
-        return f"Error: permission denied: {path}"
+        return f"Error: path is a directory: {args['path']}"
+    except PermissionError as e:
+        return f"Error: permission denied: {e}"
     except Exception as e:
         return f"Error reading file: {e}"
 
 
 async def write_file(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
-    path = _ensure_allowed(args["path"], allowed_dirs)
     content = args["content"]
     try:
+        path = _ensure_allowed(args["path"], allowed_dirs)
         parent = Path(path).parent
         parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"Successfully wrote {len(content)} bytes to {path}"
-    except PermissionError:
-        return f"Error: permission denied: {path}"
+    except PermissionError as e:
+        return f"Error: permission denied: {e}"
     except Exception as e:
         return f"Error writing file: {e}"
 
 
 async def list_dir(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
-    path = _ensure_allowed(args["path"], allowed_dirs)
     try:
+        path = _ensure_allowed(args["path"], allowed_dirs)
         entries = os.listdir(path)
         lines: list[str] = []
         for entry in sorted(entries):
@@ -67,20 +64,20 @@ async def list_dir(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
             lines.append(f"{entry}{suffix}")
         return "\n".join(lines) if lines else "(empty directory)"
     except FileNotFoundError:
-        return f"Error: directory not found: {path}"
+        return f"Error: directory not found: {args['path']}"
     except NotADirectoryError:
-        return f"Error: not a directory: {path}"
-    except PermissionError:
-        return f"Error: permission denied: {path}"
+        return f"Error: not a directory: {args['path']}"
+    except PermissionError as e:
+        return f"Error: permission denied: {e}"
     except Exception as e:
         return f"Error listing directory: {e}"
 
 
 async def grep_files(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
-    root = _ensure_allowed(args.get("path", "."), allowed_dirs)
     pattern = args["pattern"]
     include = args.get("include", "*")
     try:
+        root = _ensure_allowed(args.get("path", "."), allowed_dirs)
         import fnmatch
         import re
 

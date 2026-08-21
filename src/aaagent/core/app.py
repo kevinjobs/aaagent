@@ -31,6 +31,20 @@ _THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>", re.DOTALL |
 _UNCLOSED_THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
 _PUBLIC_ERROR = "服务暂时不可用，请稍后再试。"
 _MAX_TOOL_TURNS = 20
+_MAX_TOOL_CHARS = 200_000
+
+_REDACT_PATTERNS = [
+    (re.compile(r'(?i)(api_key\s*[:=]\s*)["\']?[A-Za-z0-9._\-]+["\']?'), r"\1***"),
+    (re.compile(r'(?i)(app_secret\s*[:=]\s*)["\']?[A-Za-z0-9._\-]+["\']?'), r"\1***"),
+    (re.compile(r'(?i)(\btoken\s*[:=]\s*)["\']?[A-Za-z0-9._\-]{6,}["\']?'), r"\1***"),
+    (re.compile(r'(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._\-]+'), r"\1***"),
+]
+
+
+def _redact_yaml(yaml_text: str) -> str:
+    for pat, repl in _REDACT_PATTERNS:
+        yaml_text = pat.sub(repl, yaml_text)
+    return yaml_text
 
 
 def _strip_think(text: str) -> str:
@@ -102,7 +116,10 @@ class Application:
         p = Path(path)
         if p.exists():
             with open(p, encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+                raw = f.read()
+            cfg = yaml.safe_load(raw) or {}
+            logger.debug("Loaded config (redacted):\n%s", _redact_yaml(raw))
+            return cfg
         return {}
 
     def _setup_tool_registry(self) -> ToolRegistry:
@@ -111,7 +128,17 @@ class Application:
         if allowed_dirs is None:
             allowed_dirs = [str(Path.cwd())]
         else:
-            allowed_dirs = [str(Path(d).resolve()) for d in allowed_dirs]
+            validated: list[str] = []
+            for d in allowed_dirs:
+                p = Path(d).resolve()
+                if not p.exists():
+                    logger.warning("allowed_dirs entry does not exist, skipped: %s", d)
+                    continue
+                validated.append(str(p))
+            if not validated:
+                logger.warning("No valid allowed_dirs after validation; defaulting to cwd")
+                validated = [str(Path.cwd())]
+            allowed_dirs = validated
 
         memory_enabled = self._config.get("memory", {}).get("enabled", True)
 
