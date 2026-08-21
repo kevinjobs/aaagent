@@ -228,8 +228,7 @@ class Application:
             role="assistant",
         )
 
-        await self._session_store.add_message(msg.session_id, reply_msg)
-        await self._session_store.maybe_compress(msg.session_id, self._provider)
+        await self._session_store.add_message(msg.session_id, reply_msg, provider=self._provider)
         await self._memory.maybe_consolidate_profile(self._provider)
 
         await self._bus.emit("message_to_send", reply_msg)
@@ -247,6 +246,15 @@ class Application:
             return result.content
 
         for turn in range(1, _MAX_TOOL_TURNS + 1):
+            total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            if total_chars > _MAX_TOOL_CHARS:
+                logger.warning(
+                    "Tool loop messages exceed %d chars (%d), aborting for session %s",
+                    _MAX_TOOL_CHARS,
+                    total_chars,
+                    session_id,
+                )
+                return "上下文过长，已中止。请开启新对话。"
             result = await self._provider.chat(messages, tools=tools)
 
             if not result.tool_calls:

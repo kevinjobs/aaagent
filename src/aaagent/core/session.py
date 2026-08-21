@@ -120,23 +120,24 @@ class SessionStore:
             self._evict_lru()
         return session
 
-    async def add_message(self, session_id: str, msg: Message) -> Session:
+    async def add_message(
+        self,
+        session_id: str,
+        msg: Message,
+        provider: LLMProvider | None = None,
+    ) -> Session:
         async with self._get_lock(session_id):
             session = self.get_or_create(session_id, msg.platform, msg.chat_id)
             session.messages.append(msg)
             session.last_activity = time.time()
+            if provider is not None and session.needs_compress():
+                await session.compress(provider)
             return session
 
     async def get_context(self, session_id: str) -> list[dict[str, str]]:
         async with self._get_lock(session_id):
             session = self.get_or_create(session_id)
             return session.get_context()
-
-    async def maybe_compress(self, session_id: str, provider: LLMProvider) -> None:
-        async with self._get_lock(session_id):
-            session = self.get_or_create(session_id)
-            if session.needs_compress():
-                await session.compress(provider)
 
     def list_sessions(self) -> list[Session]:
         return list(self._sessions.values())
