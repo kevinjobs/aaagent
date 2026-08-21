@@ -121,6 +121,26 @@ class FileToolsPlugin(ToolPlugin):
 file = "aaagent_plugin_filetools:FileToolsPlugin"
 ```
 
+Tool plugins that need async setup (e.g. open an MCP or database connection)
+or cleanup (close a connection pool) can override the optional hooks on the
+`ToolPlugin` protocol. `Application.run()` calls `establish(registry, config)`
+once after synchronous `register()` and before adapters start; `close()` is
+called at `Application.stop()`. Both have no-op defaults so simple plugins
+don't need them.
+
+```python
+class McpToolsPlugin(ToolPlugin):
+    name = "mcp"
+
+    async def establish(self, registry, config):
+        # open transport, list_tools, register expanded tools
+        ...
+
+    async def close(self):
+        # release transport / child process
+        ...
+```
+
 ## Example: a Provider plugin
 
 ```python

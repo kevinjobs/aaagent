@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.1 - Unreleased
+
+### Memory & Retrieval
+- `MemoryStore.recall` accepts an optional `tags` filter
+- **markdownstore**: fact lines are parsed structurally and ranked by
+  corpus-aware IDF-weighted token overlap + recency decay + tag bonus;
+  `recall` honors `top_k` / `tags` (`memory.recall.*` weights configurable)
+- **memorytools**: the `recall` tool forwards `top_k` (default 10) and
+  `tags`; schema documents both
+- Sessions idle longer than `memory.archive_after_hours` (default 24) are
+  periodically archived to `archive.md` and dropped from the session store
+  (`SessionStore.drop_session`), wiring the previously-dead
+  `MemoryStore.archive_session` path
+- Fix: `Application` never imported `time` (latent NameError in the tool loop)
+
+### MCP
+- New `aaagent-plugin-mcp`: bridges MCP servers (stdio / streamable HTTP)
+  into the ToolRegistry with automatic `<server>_<tool>` expansion; lazy
+  connections, failure isolation, `establish()`/`close()` lifecycle hooks
+- `ToolPlugin` protocol gains optional async `establish(registry, config)`
+  and `close()`; `Application.run()` establishes before adapters start and
+  closes on shutdown
+- Declared `[dependency-groups] dev` (pytest, pytest-asyncio, fastmcp) so
+  `uv sync --all-packages` keeps the test harness installed
+
 ## 0.3.0 - Unreleased
 
 ### Plugin Refactor (commits 1-9)

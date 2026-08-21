@@ -1,6 +1,6 @@
 [project]
 name = "aaagent"
-version = "0.3.0"
+version = "0.3.1"
 description = "A pluggable IM + LLM agent framework"
 requires-python = ">=3.11"
 dependencies = [

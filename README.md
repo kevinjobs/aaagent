@@ -13,6 +13,7 @@ aaagent                 # core (CLI, EventBus, plugin manager, PromptBuilder, ..
     ├── aaagent-plugin-filetools/
     ├── aaagent-plugin-shelltools/
     ├── aaagent-plugin-memorytools/
+    ├── aaagent-plugin-mcp/
     ├── aaagent-plugin-cliadapter/
     ├── aaagent-plugin-feishu/
     ├── aaagent-plugin-inmemorysession/
@@ -70,6 +71,14 @@ uv pip install aaagent \
 ```bash
 uv pip install aaagent-plugin-feishu
 ```
+
+### Adding MCP tool servers
+
+```bash
+uv pip install aaagent-plugin-mcp
+```
+
+Configure `mcp.servers` in `config.yaml` (see [Configuration](#mcp)).
 
 ## Configuration
 
@@ -201,15 +210,42 @@ memory:
   type: markdown               # matches plugin entry-point name
   enabled: true
   data_dir: "data/memories"
+  # 空闲超过此时长（小时）的会话会被归档到 archive.md 并从内存移除
+  archive_after_hours: 24
+  recall:
+    relevance_weight: 0.7
+    recency_weight: 0.3
 ```
 
 - `type`: `markdown` plugin (default), or any installed memory plugin
 - Three Markdown files under `data_dir`: `profile.md`,
   `facts/YYYY-MM-DD.md`, `archive.md`
 - `profile.md` is consolidated when entries >= 15
+- `recall` ranks memories by IDF-weighted token overlap + recency decay,
+  and accepts a `tags` filter / `top_k` (the `recall` tool exposes both)
 
 Relative `data_dir` paths resolve against the directory containing
 `config.yaml`, not cwd.
+
+### MCP
+
+Connects your agent to any [Model Context Protocol](https://modelcontextprotocol.io)
+server. Each configured server's tools are auto-expanded into the registry
+under the `<server_name>_<tool_name>` namespace.
+
+```yaml
+mcp:
+  servers:
+    - name: fs
+      transport: stdio  # stdio | http
+      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
+    - name: remote
+      transport: http
+      url: "http://localhost:8080/mcp"
+```
+
+Servers with `enabled: false` are skipped. A failing server is logged and
+isolated — other servers and native tools still work.
 
 ### Rate limiting
 
@@ -314,6 +350,7 @@ logging.
 | `aaagent-plugin-filetools` | File tools (read/write/list/grep) | `FileToolsPlugin` |
 | `aaagent-plugin-shelltools` | Shell execution | `ShellToolsPlugin` |
 | `aaagent-plugin-memorytools` | remember / recall tools | `MemoryToolsPlugin` |
+| `aaagent-plugin-mcp` | Model Context Protocol server bridge | `McpToolsPlugin` |
 | `aaagent-plugin-cliadapter` | CLI REPL adapter | `CliAdapter` |
 | `aaagent-plugin-feishu` | Feishu WebSocket adapter | `FeishuAdapter` |
 | `aaagent-plugin-inmemorysession` | In-memory session store | `InMemorySessionFactory` |
