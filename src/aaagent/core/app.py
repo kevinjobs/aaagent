@@ -115,10 +115,32 @@ class Application:
         self._adapters: list[IMAdapter] = []
         self._providers: dict[str, LLMProvider] = providers if providers is not None else {}
         self._provider: LLMProvider | None = None
-        self._memory = memory if memory is not None else MemoryStore(
-            data_dir=self._config.get("memory", {}).get("data_dir", "data/memories"),
-            base_path=Path(config_path).resolve().parent if Path(config_path).is_absolute() else Path.cwd(),
-        )
+        # Memory via plugin factory (fallback to direct construction when no plugin)
+        if memory is None:
+            memory_cfg = self._config.get("memory", {})
+            memory_type = memory_cfg.get("type", "markdown")
+            memory_cfg.setdefault(
+                "base_path",
+                str(
+                    Path(config_path).resolve().parent
+                    if Path(config_path).is_absolute()
+                    else Path.cwd()
+                ),
+            )
+            try:
+                factory = self._plugins.get_memory_factory(memory_type)
+                memory = factory.create(memory_cfg)
+            except PluginNotFoundError as e:
+                logger.warning(
+                    "No memory store plugin for type '%s': %s; falling back to direct construction",
+                    memory_type,
+                    e,
+                )
+                memory = MemoryStore(
+                    data_dir=memory_cfg.get("data_dir", "data/memories"),
+                    base_path=Path(memory_cfg["base_path"]),
+                )
+        self._memory = memory
         self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
         rate_cfg = self._config.get("rate_limit", {})

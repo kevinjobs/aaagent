@@ -4,9 +4,9 @@ import pytest
 
 from aaagent.core.app import Application
 from aaagent.core.bus import EventBus
-from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
 from aaagent.providers.base import ChatResponse, LLMProvider, ToolCall
+from aaagent_plugin_markdownstore import MarkdownMemoryStore
 
 
 def _write_minimal_config(tmp_path):
@@ -31,7 +31,7 @@ async def test_application_with_injected_fakes_runs(tmp_path):
     """End-to-end: a message goes through bus -> session -> provider -> reply."""
     cfg = _write_minimal_config(tmp_path)
     bus = EventBus()
-    memory = MemoryStore(data_dir="data", base_path=tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
 
     class _P(LLMProvider):
         def __init__(self):
@@ -86,7 +86,7 @@ async def test_application_with_injected_fakes_runs(tmp_path):
 async def test_application_tool_loop_length_aborts(tmp_path):
     cfg = _write_minimal_config(tmp_path)
     bus = EventBus()
-    memory = MemoryStore(data_dir="data", base_path=tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
 
     class _BigProvider(LLMProvider):
         def __init__(self):

@@ -163,4 +163,6 @@ BUILTIN_SESSIONS: dict[str, str] = {
     "inmemory": "aaagent_plugin_inmemorysession:InMemorySessionFactory",
 }
 
-BUILTIN_MEMORIES: dict[str, str] = {}
+BUILTIN_MEMORIES: dict[str, str] = {
+    "markdown": "aaagent_plugin_markdownstore:MarkdownMemoryStoreFactory",
+}
