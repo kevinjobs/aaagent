@@ -20,9 +20,18 @@ _TIMESTAMP_FMT = "%Y-%m-%d %H:%M"
 
 class MemoryStore:
     def __init__(self, data_dir: str = "data/memories", base_path: Path | None = None) -> None:
-        base = Path(base_path) if base_path else Path.cwd()
+        # When base_path is provided, relative data_dir paths resolve against it
+        # (typically the directory containing config.yaml). When neither is
+        # absolute, fall back to cwd for predictability in chat/run modes.
+        if base_path is not None:
+            base = Path(base_path).resolve()
+        else:
+            base = Path.cwd()
         raw = Path(data_dir)
-        self._data_dir = raw if raw.is_absolute() else base / raw
+        if raw.is_absolute():
+            self._data_dir = raw
+        else:
+            self._data_dir = base / raw
         self._facts_dir = self._data_dir / "facts"
         self._profile_path = self._data_dir / "profile.md"
         self._archive_path = self._data_dir / "archive.md"
