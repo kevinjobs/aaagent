@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from typing import Any, Callable, Coroutine
 
+logger = logging.getLogger("aaagent.bus")
 
 Handler = Callable[[Any], Coroutine[Any, Any, None]]
 
@@ -16,9 +18,14 @@ class EventBus:
         self._handlers[event].append(handler)
 
     async def emit(self, event: str, data: Any = None) -> None:
-        for handler in self._handlers.get(event, []):
-            try:
-                await handler(data)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+        handlers = list(self._handlers.get(event, []))
+        if not handlers:
+            return
+        coros = [self._safe_call(event, h, data) for h in handlers]
+        await asyncio.gather(*coros, return_exceptions=True)
+
+    async def _safe_call(self, event: str, handler: Handler, data: Any) -> None:
+        try:
+            await handler(data)
+        except Exception:
+            logger.exception("Handler for event '%s' raised", event)

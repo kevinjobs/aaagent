@@ -25,6 +25,8 @@ class Message:
         d: dict[str, Any] = {"role": self.role}
         if self.role == "tool":
             d["tool_call_id"] = self.tool_call_id
+            if self.name:
+                d["name"] = self.name
             d["content"] = self.content
         elif self.tool_calls:
             d["content"] = self.content or None

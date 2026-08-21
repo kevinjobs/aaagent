@@ -448,7 +448,12 @@ class FeishuAdapter(IMAdapter):
 
     async def _on_message_to_send(self, msg: Message) -> None:
         if msg.platform == "feishu":
-            await self.send(msg)
+            try:
+                await self.send(msg)
+            except Exception:
+                logger.exception(
+                    "Feishu send failed for session %s", msg.session_id
+                )
 
     def _extract_text(self, content: str, msg_type: str) -> str:
         if msg_type != "text":
