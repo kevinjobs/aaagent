@@ -10,23 +10,26 @@ from typing import Any
 
 import yaml
 
-from aaagent.adapters.base import IMAdapter
-from aaagent.adapters.cli_adapter import CliAdapter
-from aaagent.adapters.feishu import FeishuAdapter
-from aaagent.adapters.wechat import WechatAdapter
+from aaagent.core._builtin_wrappers import (
+    BUILTIN_ADAPTERS,
+    BUILTIN_PROVIDERS,
+    BUILTIN_TOOLS,
+)
 from aaagent.core.bus import EventBus
 from aaagent.core.logctx import reset_context, set_context
 from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
+from aaagent.core.plugin import (
+    IMAdapter,
+    PluginManager,
+    PluginNotFoundError,
+    Provider,
+)
 from aaagent.core.prompt import PromptBuilder
 from aaagent.core.ratelimit import TokenBucket
 from aaagent.core.session import SessionStore
 from aaagent.providers.base import LLMProvider, PROVIDER_TYPE_REGISTRY
-from aaagent.providers.openai import OpenAICompatibleProvider
-from aaagent.tools.file_tools import register_file_tools
-from aaagent.tools.memory_tools import register_memory_tools
 from aaagent.tools.registry import ToolRegistry
-from aaagent.tools.shell_tools import register_shell_tools
 
 logger = logging.getLogger("aaagent")
 
@@ -59,45 +62,6 @@ def _strip_think(text: str) -> str:
     return cleaned.strip()
 
 
-ADAPTER_REGISTRY: dict[str, type[IMAdapter]] = {
-    "cli": CliAdapter,
-    "feishu": FeishuAdapter,
-    "wechat": WechatAdapter,
-}
-
-
-def _resolve_provider(name: str, cfg: dict[str, Any]) -> LLMProvider | None:
-    return _resolve_provider_from_registry(name, cfg, PROVIDER_TYPE_REGISTRY)
-
-
-def _resolve_provider_from_registry(
-    name: str,
-    cfg: dict[str, Any],
-    registry: dict[str, type[LLMProvider]],
-) -> LLMProvider | None:
-    provider_type = cfg.get("type", "")
-
-    if provider_type == "custom":
-        class_path = cfg.get("class", "")
-        if not class_path:
-            logger.error("Custom provider '%s' missing 'class' field", name)
-            return None
-        module_path, _, cls_name = class_path.rpartition(".")
-        try:
-            module = importlib.import_module(module_path)
-            cls = getattr(module, cls_name)
-        except (ImportError, AttributeError) as e:
-            logger.error("Failed to load custom provider '%s': %s", name, e)
-            return None
-        return cls(name=name, config=cfg)
-
-    provider_cls = registry.get(provider_type)
-    if provider_cls is None:
-        logger.error("Unknown provider type '%s' for provider '%s'", provider_type, name)
-        return None
-    return provider_cls(name=name, config=cfg)
-
-
 class Application:
     def __init__(
         self,
@@ -108,11 +72,22 @@ class Application:
         memory: MemoryStore | None = None,
         tool_registry: ToolRegistry | None = None,
         providers: dict[str, LLMProvider] | None = None,
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         from dotenv import load_dotenv
         load_dotenv()
         self._config = self._load_config(config_path)
         self._bus = bus if bus is not None else EventBus()
+
+        # Plugin discovery (loads builtin + entry_points + config overrides)
+        self._plugins = plugin_manager if plugin_manager is not None else PluginManager(
+            self._config
+        )
+        self._plugins.BUILTIN_PROVIDERS = dict(BUILTIN_PROVIDERS)
+        self._plugins.BUILTIN_ADAPTERS = dict(BUILTIN_ADAPTERS)
+        self._plugins.BUILTIN_TOOLS = dict(BUILTIN_TOOLS)
+        self._plugins.load()
+
         self._session_store = session_store if session_store is not None else SessionStore(
             max_history=self._config.get("session", {}).get("max_history", 20),
             compress_threshold=self._config.get("session", {}).get("compress_threshold", 0.8),
@@ -162,15 +137,30 @@ class Application:
                 validated = [str(Path.cwd())]
             allowed_dirs = validated
 
-        memory_enabled = self._config.get("memory", {}).get("enabled", True)
-
         registry = ToolRegistry(allowed_dirs=allowed_dirs)
-        register_file_tools(registry)
-        if tools_cfg.get("shell", {}).get("enabled", True):
-            register_shell_tools(registry)
-        if memory_enabled:
-            set_store = register_memory_tools(registry)
-            set_store(self._memory)
+
+        # Instantiate tool plugin classes via PluginManager, then register
+        for plugin_cls in self._plugins.get_tool_classes():
+            try:
+                plugin = plugin_cls()
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "Failed to instantiate tool plugin %s: %s",
+                    plugin_cls.__name__,
+                    e,
+                )
+                continue
+            try:
+                if hasattr(plugin, "set_memory"):
+                    plugin.set_memory(self._memory)
+                plugin.register(registry, self._config)
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "Tool plugin %s.register() failed: %s",
+                    plugin_cls.__name__,
+                    e,
+                )
+
         logger.info(
             "Tool registry initialized with %d tools, allowed_dirs=%s",
             len(registry.tool_names),
@@ -188,16 +178,64 @@ class Application:
         providers_cfg = self._config.get("providers", {})
         default_name = self._config.get("default_provider", "")
 
-        self._provider_registry = dict(PROVIDER_TYPE_REGISTRY)
-
         for name, cfg in providers_cfg.items():
             if not cfg.get("enabled", False):
                 continue
-            provider = _resolve_provider_from_registry(name, cfg, self._provider_registry)
+            provider = self._instantiate_provider(name, cfg)
             if provider is None:
                 continue
             self._providers[name] = provider
             logger.info("Loaded provider: %s (type=%s)", name, cfg.get("type", ""))
+
+    def _instantiate_provider(
+        self, name: str, cfg: dict[str, Any]
+    ) -> LLMProvider | None:
+        provider_type = cfg.get("type", "")
+
+        # Legacy custom: load class directly via dotted path
+        if provider_type == "custom":
+            class_path = cfg.get("class", "")
+            if not class_path:
+                logger.error("Custom provider '%s' missing 'class' field", name)
+                return None
+            module_path, _, cls_name = class_path.rpartition(".")
+            try:
+                module = importlib.import_module(module_path)
+                cls = getattr(module, cls_name)
+            except (ImportError, AttributeError) as e:
+                logger.error("Failed to load custom provider '%s': %s", name, e)
+                return None
+            return cls(name=name, config=cfg)
+
+        # Plugin-resolved provider
+        try:
+            plugin_cls = self._plugins.get_provider_class(provider_type)
+        except PluginNotFoundError:
+            logger.error(
+                "Unknown provider type '%s' for provider '%s'", provider_type, name
+            )
+            return None
+
+        plugin_cfg = dict(cfg)
+        plugin_cfg["_name"] = name
+        instance = plugin_cls(plugin_cfg)
+
+        # Adapt to legacy LLMProvider interface for the rest of the code
+        from aaagent.providers.base import LLMProvider as _LP
+
+        if isinstance(instance, _LP):
+            return instance
+
+        # Wrap a new-Provider plugin in a thin LLMProvider shim
+        class _Shim(_LP):
+            def __init__(self, name, plugin):
+                super().__init__(name=name, config=plugin.config)
+                self._plugin = plugin
+
+            async def chat(self, messages, tools=None, **kwargs):
+                return await self._plugin.chat(messages, tools=tools, **kwargs)
+
+        return _Shim(name, instance)
 
         if default_name and default_name in self._providers:
             self._provider = self._providers[default_name]
@@ -212,7 +250,7 @@ class Application:
                 continue
             if self._enabled_adapters is not None and name not in self._enabled_adapters:
                 continue
-            cls = ADAPTER_REGISTRY.get(name)
+            cls = self._plugins.get_adapter_class(name)
             if cls is None:
                 logger.warning("Unknown adapter: %s", name)
                 continue

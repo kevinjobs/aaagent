@@ -3,21 +3,23 @@ from __future__ import annotations
 from typing import Any
 
 
-def register_memory_tools(registry: Any) -> None:
-    memory_store_ref: list[Any] = []
-
-    def set_store(store: Any) -> None:
-        memory_store_ref.append(store)
+def register_memory_tools(registry: Any, memory_store: Any | None = None) -> None:
+    """Register remember / recall tools that operate on a MemoryStore."""
+    store_ref: list[Any] = [memory_store]
 
     async def _remember(args: dict[str, Any]) -> str:
-        store = memory_store_ref[0]
+        if store_ref[0] is None:
+            return "Error: memory store not initialized"
+        store = store_ref[0]
         content = args["content"]
         tags = args.get("tags", None)
         result = await store.remember(content=content, tags=tags)
         return f"已记住：{result}"
 
     async def _recall(args: dict[str, Any]) -> str:
-        store = memory_store_ref[0]
+        if store_ref[0] is None:
+            return "Error: memory store not initialized"
+        store = store_ref[0]
         query = args["query"]
         result = await store.recall(query=query)
         return result
@@ -42,7 +44,6 @@ def register_memory_tools(registry: Any) -> None:
         },
         handler=_remember,
     )
-
     registry.register(
         name="recall",
         description="回忆已记住的信息。当你需要了解用户偏好、之前讨论过的事实、或项目历史信息时调用。",
@@ -63,5 +64,3 @@ def register_memory_tools(registry: Any) -> None:
         },
         handler=_recall,
     )
-
-    return set_store
