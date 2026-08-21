@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+### Plugin Refactor (commits 1-9)
+- **Core protocols**: `Provider`, `ToolPlugin`, `IMAdapter`,
+  `SessionStoreFactory`, `MemoryStoreFactory` defined in
+  `core/plugin.py`
+- **PluginManager** discovers plugins via builtin registry, Python
+  entry points (`aaagent.providers` / `aaagent.tools` /
+  `aaagent.adapters` / `aaagent.sessions` / `aaagent.memories`), and
+  config.yaml overrides; runtime validation raises
+  `PluginNotFoundError` / `PluginValidationError`
+- **envutil**: single `resolve_env()` for `${ENV_VAR}` placeholders
+- All concrete implementations moved to plugin packages under
+  `plugins/`: openai, filetools, shelltools, memorytools, cliadapter,
+  feishu, inmemorysession, markdownstore (8 plugins, no wechat)
+- uv workspace with `[tool.uv.sources]` for in-tree development
+- `wechat` adapter removed (was a NotImplementedError stub)
+- See `docs/plugin-authoring.md` for plugin author guide
+
 ## 0.2.0 - Unreleased
 
 ### Security & Data Integrity (Work Item A)

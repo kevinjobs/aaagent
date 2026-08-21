@@ -1,13 +1,74 @@
 # aaagent
 
-A pluggable IM + LLM agent framework.
+A pluggable IM + LLM agent framework. Everything except the core is a
+plugin — providers, tools, IM adapters, session stores, and memory
+stores are all loaded through Python entry points.
+
+## Architecture
+
+```
+aaagent                 # core (CLI, EventBus, plugin manager, PromptBuilder, ...)
+└── plugins/             # uv workspace of in-tree plugins
+    ├── aaagent-plugin-openai/
+    ├── aaagent-plugin-filetools/
+    ├── aaagent-plugin-shelltools/
+    ├── aaagent-plugin-memorytools/
+    ├── aaagent-plugin-cliadapter/
+    ├── aaagent-plugin-feishu/
+    ├── aaagent-plugin-inmemorysession/
+    └── aaagent-plugin-markdownstore/
+```
+
+The core defines five protocols (`Provider`, `ToolPlugin`, `IMAdapter`,
+`SessionStoreFactory`, `MemoryStoreFactory`) and a `PluginManager` that
+discovers implementations via:
+
+1. Builtin registry (in-tree fallback)
+2. Python entry points (`importlib.metadata.entry_points(group=...)`)
+3. Explicit config.yaml overrides (`plugins:` block)
+
+See [docs/plugin-authoring.md](docs/plugin-authoring.md) for the full
+plugin authoring guide.
 
 ## Installation
 
+The project uses [uv](https://github.com/astral-sh/uv) workspaces.
+
 ```bash
-uv sync
-# or
-pip install -e .
+uv sync --all-packages
+```
+
+This installs `aaagent` plus all 8 in-tree plugins. After that:
+
+```bash
+aaagent chat    # CLI chat mode (requires cliadapter + openai + at least one tool)
+aaagent run     # start all enabled adapters from config.yaml
+```
+
+If you only need the core (for instance to write a new plugin):
+
+```bash
+uv pip install aaagent
+uv pip install aaagent-plugin-openai     # + any other plugins
+```
+
+### Minimal chat install
+
+```bash
+uv pip install aaagent \
+  aaagent-plugin-openai \
+  aaagent-plugin-filetools \
+  aaagent-plugin-shelltools \
+  aaagent-plugin-memorytools \
+  aaagent-plugin-cliadapter \
+  aaagent-plugin-inmemorysession \
+  aaagent-plugin-markdownstore
+```
+
+### Adding Feishu
+
+```bash
+uv pip install aaagent-plugin-feishu
 ```
 
 ## Configuration
@@ -18,16 +79,16 @@ Copy `.env.example` to `.env` and fill in your API keys:
 cp .env.example .env
 ```
 
-Edit `config.yaml` to configure providers, adapters, tools, memory, and rate limits.
+Edit `config.yaml` to wire providers, adapters, tools, memory, and rate
+limits.
 
 ### Providers
 
-Each provider requires a `type` field. Supported types:
-
-- `openai_compatible` — OpenAI-compatible API (OpenAI, DeepSeek, Qwen, MiniMax, cntoken, etc.)
-- `custom` — Dynamically load a custom provider class via `class` field
-
-Set `default_provider` to specify which provider to use. If omitted, the first enabled provider is used.
+Each provider requires a `type` field that matches the `Provider.type`
+class attribute / entry-point name of an installed plugin. Built-in
+plugins ship with `openai_compatible` (covers OpenAI, DeepSeek, Qwen,
+MiniMax, cntoken, etc.) and `custom` (load any class via
+`cfg.class`).
 
 ```yaml
 default_provider: deepseek
@@ -55,27 +116,21 @@ providers:
 
 - `api_key`: supports `${ENV_VAR}` syntax (loaded from `.env`)
 - `base_url`: override the API endpoint for OpenAI-compatible services
+- `class`: dotted path for `type: custom` providers
 
-#### Adding a custom provider (in-process)
+### Adding a custom provider (in-process)
 
-```python
-from aaagent.providers.base import PROVIDER_TYPE_REGISTRY, LLMProvider, ChatResponse
-
-class MyProvider(LLMProvider):
-    async def chat(self, messages, tools=None, **kwargs):
-        return ChatResponse(content="hi")
-
-PROVIDER_TYPE_REGISTRY["my_provider"] = MyProvider
-```
-
-Then in `config.yaml`:
+If your provider is not yet a published plugin, add an explicit
+declaration:
 
 ```yaml
-providers:
-  mine:
+plugins:
+  - kind: provider
     type: my_provider
-    enabled: true
+    class: my_pkg.sub:MyProvider
 ```
+
+`kind` is one of `provider`, `tool`, `adapter`, `session`, `memory`.
 
 ### Adapters
 
@@ -85,65 +140,76 @@ adapters:
     enabled: false
     app_id: "${FEISHU_APP_ID}"
     app_secret: "${FEISHU_APP_SECRET}"
-  wechat:
-    enabled: false
-    token: ""
+  cli:
+    enabled: true
 ```
 
-- **feishu**: WebSocket-based, requires app credentials from <https://open.feishu.cn/app>
-- **wechat**: skeleton only, not yet implemented
+- **feishu**: WebSocket-based, requires app credentials from
+  <https://open.feishu.cn/app>
+- **cli**: REPL chat; only meaningful with the `chat` command
 
 ### Session
 
 ```yaml
 session:
+  type: inmemory               # matches plugin entry-point name
   max_history: 20
   compress_threshold: 0.8
 ```
 
+- `type`: `inmemory` plugin (default), or any installed session plugin
 - `max_history`: max messages kept per session (sliding window)
-- `compress_threshold`: when the message count exceeds `max_history * compress_threshold`,
-  the oldest messages are summarized and replaced with a single summary system message
+- `compress_threshold`: when the message count exceeds
+  `max_history * compress_threshold`, the oldest messages are summarized
+  and replaced with a single summary system message
 
 ### Tools
 
+Tools come from `aaagent.tools` plugins. Enabled / disabled via the
+plugin name:
+
 ```yaml
 tools:
-  allowed_dirs:
-    - "D:/Projects/aaagent"
+  file:
+    enabled: true
+    allowed_dirs:
+      - "D:/Projects/aaagent"
   shell:
     enabled: true
     timeout: 30
     max_output: 4096
+  memory:
+    enabled: true
 ```
 
-- `allowed_dirs`: file tool paths must live under one of these; non-existent entries
-  are warned and skipped at startup
-- `shell.enabled`: toggles `run_shell`; default `true`
-- `shell.timeout`: per-command timeout in seconds (default 30)
-- `shell.max_output`: stdout/stderr truncation length (default 4096)
+- `file` (aaagent-plugin-filetools): `read_file`, `write_file`,
+  `list_dir`, `grep`; paths must live under one of `allowed_dirs`
+- `shell` (aaagent-plugin-shelltools): `run_shell` with a safety policy
+- `memory` (aaagent-plugin-memorytools): `remember`, `recall` operating
+  on the configured `MemoryStore`
 
-The shell tool enforces a safety policy: commands targeting root (`rm -rf /`, `dd if=<abs>`,
-`mkfs.*`, redirect to `/dev/sd*`, `chmod 777 /`, `chown root:root /`, fork bomb) are
-denied regardless of any bypass attempt (backslash, pipeline, etc.).
+#### Shell safety policy
+
+The shell tool denies commands targeting root (`rm -rf /`, `dd if=<abs>`,
+`mkfs.*`, redirect to `/dev/sd*`, `chmod 777 /`, `chown root:root /`,
+fork bomb) regardless of any bypass attempt (backslash, pipeline, etc.).
 
 ### Memory
 
 ```yaml
 memory:
+  type: markdown               # matches plugin entry-point name
   enabled: true
   data_dir: "data/memories"
 ```
 
-The memory store keeps three Markdown files in `data_dir`:
-- `profile.md` — user preferences / identity (consolidated when entries >= 15)
-- `facts/YYYY-MM-DD.md` — chronological fact log
-- `archive.md` — session archives
+- `type`: `markdown` plugin (default), or any installed memory plugin
+- Three Markdown files under `data_dir`: `profile.md`,
+  `facts/YYYY-MM-DD.md`, `archive.md`
+- `profile.md` is consolidated when entries >= 15
 
-The agent can call the `remember` and `recall` tools to manage its own memory.
-
-Relative `data_dir` paths resolve against the directory containing `config.yaml`,
-not the current working directory, so the memory location is stable.
+Relative `data_dir` paths resolve against the directory containing
+`config.yaml`, not cwd.
 
 ### Rate limiting
 
@@ -152,8 +218,8 @@ rate_limit:
   provider_rpm: 60
 ```
 
-If set, calls to the provider (chat and stream_chat) are throttled to the given
-requests-per-minute. Useful for upstream APIs with QPS limits.
+If set, calls to the provider (chat and stream_chat) are throttled to
+the given requests-per-minute.
 
 ## CLI Usage
 
@@ -162,8 +228,6 @@ requests-per-minute. Useful for upstream APIs with QPS limits.
 ```bash
 python -m aaagent chat
 ```
-
-Enter interactive REPL. Available commands in chat:
 
 | Command | Description |
 |---------|-------------|
@@ -190,85 +254,102 @@ When the LLM decides to call tools, it goes through a loop:
 
 - Up to **20 turns** per request (`_MAX_TOOL_TURNS`); exceeding returns
   `"已达到最大工具调用次数。"`
-- The accumulated `messages` payload must stay under **200,000 characters**
+- Accumulated `messages` payload must stay under **200,000 characters**
   (`_MAX_TOOL_CHARS`); exceeding returns `"上下文过长，已中止。请开启新对话。"`
-- After the loop, the session is compressed if it exceeds `max_history * compress_threshold`,
-  triggered inside the same lock as `add_message` so concurrent requests cannot
-  interleave compress and append.
-- Tool execution time is reported via the `tool_result` event payload (`duration_ms`).
-
-If you have many tools, expect the first reply to take a few seconds while the
-LLM reasons about which to call.
+- After the loop, the session is compressed if it exceeds
+  `max_history * compress_threshold`, triggered inside the same lock
+  as `add_message` so concurrent requests cannot interleave compress
+  and append.
+- Tool execution time is reported via the `tool_result` event payload
+  (`duration_ms`).
 
 ## Streaming
 
-The OpenAI provider supports streaming. When no tools are configured, the agent
-yields tokens to the CLI as they arrive (via the `stream_token` event). When
-tools are present, the agent still uses non-streaming `chat()` because it needs
-to parse `tool_calls` deterministically.
+The OpenAI provider supports streaming. When no tools are configured,
+the agent yields tokens to the CLI as they arrive (via the `stream_token`
+event). When tools are present, the agent still uses non-streaming
+`chat()` because it needs to parse `tool_calls` deterministically.
 
 ## Logs
 
 Default format:
 
 ```
-2026-08-21 12:34:56 [INFO] [s1/feishu] aaagent.tools.shell: ...
+2026-08-21 12:34:56 [INFO] [s1/feishu] aaagent.tools: ...
 ```
 
 The `[session_id/platform]` segment is filled from contextvars set by
-`Application._on_message_received` so log lines are correlatable per request.
+`Application._on_message_received` so log lines are correlatable per
+request.
 
-`run` mode prints to stderr; `chat` mode writes to `logs/aaagent.log` and keeps
-the console quiet.
+`run` mode prints to stderr; `chat` mode writes to `logs/aaagent.log`
+and keeps the console quiet.
 
-For the Feishu adapter, set `FEISHU_DEBUG=1` to enable verbose frame logging.
+For the Feishu adapter, set `FEISHU_DEBUG=1` to enable verbose frame
+logging.
 
 ## Troubleshooting
 
-- **`denied by safety policy`** — your command matched a shell deny rule. Review
-  the rule list above.
+- **`No provider plugin for type 'xxx'`** — install the matching plugin,
+  e.g. `pip install aaagent-plugin-openai`.
+- **`command denied by safety policy`** — your command matched a shell
+  deny rule; review the rule list above.
 - **Provider 4xx/5xx storm** — set `rate_limit.provider_rpm` to throttle.
-- **Memory not persisting** — check that `data_dir` resolves to a writable
-  directory. With relative paths, it resolves against `config.yaml`'s directory.
-- **Feishu adapter not starting** — `app_id` / `app_secret` must be set; the
-  adapter logs an error and exits if missing.
-- **`logs/aaagent.log` not created in `chat` mode** — check that `logs/` is
-  writable relative to the current working directory.
+- **Memory not persisting** — check that `data_dir` resolves to a
+  writable directory. With relative paths, it resolves against the
+  `config.yaml` directory.
+- **Feishu adapter not starting** — `app_id` / `app_secret` must be
+  set; the adapter logs an error and exits if missing.
+- **`logs/aaagent.log` not created in `chat` mode** — check that
+  `logs/` is writable relative to cwd.
+
+## Plugins
+
+`aaagent` is shipped with these in-tree plugins (all included via
+`uv sync --all-packages`):
+
+| Folder | Provides | Plugin class |
+|---|---|---|
+| `aaagent-plugin-openai` | OpenAI-compatible LLM provider | `OpenAICompatibleProvider` |
+| `aaagent-plugin-filetools` | File tools (read/write/list/grep) | `FileToolsPlugin` |
+| `aaagent-plugin-shelltools` | Shell execution | `ShellToolsPlugin` |
+| `aaagent-plugin-memorytools` | remember / recall tools | `MemoryToolsPlugin` |
+| `aaagent-plugin-cliadapter` | CLI REPL adapter | `CliAdapter` |
+| `aaagent-plugin-feishu` | Feishu WebSocket adapter | `FeishuAdapter` |
+| `aaagent-plugin-inmemorysession` | In-memory session store | `InMemorySessionFactory` |
+| `aaagent-plugin-markdownstore` | Markdown memory store | `MarkdownMemoryStoreFactory` |
+
+To author a new plugin, see
+[docs/plugin-authoring.md](docs/plugin-authoring.md).
 
 ## Project Structure
 
 ```
-src/aaagent/
-├── cli.py                       # Typer entry point (run / chat)
-├── core/
-│   ├── app.py                   # Application orchestrator (DI-aware)
-│   ├── bus.py                   # Async event bus with concurrent handlers
-│   ├── logctx.py                # contextvars-based logging context
-│   ├── memory.py                # MemoryStore (async, locked)
-│   ├── message.py               # Unified Message dataclass
-│   ├── prompt.py                # PromptBuilder (central context assembly)
-│   ├── ratelimit.py             # TokenBucket
-│   └── session.py               # SessionStore (per-session lock)
-├── adapters/
-│   ├── base.py                  # IMAdapter ABC + health_check hook
-│   ├── cli_adapter.py           # CLI REPL (rich output + streaming)
-│   ├── feishu.py                # Feishu WebSocket adapter
-│   └── wechat.py                # placeholder
-├── providers/
-│   ├── base.py                  # LLMProvider ABC + chat/stream_chat + registry
-│   └── openai.py                # OpenAI-compatible (chat + streaming)
-└── tools/
-    ├── registry.py              # ToolRegistry
-    ├── file_tools.py            # read_file / write_file / list_dir / grep
-    ├── shell_tools.py           # run_shell (rule-table deny list)
-    └── memory_tools.py          # remember / recall
+aaagent/                                  # workspace root
+├── pyproject.toml                         # aaagent-core + workspace members
+├── src/aaagent/                           # core (CLI, bus, plugin manager, ...)
+│   ├── cli.py
+│   └── core/
+│       ├── app.py                          # Application (plugin-driven)
+│       ├── bus.py
+│       ├── envutil.py                      # ${ENV_VAR} resolver
+│       ├── logctx.py                       # contextvars logging context
+│       ├── memory.py                       # MemoryStore ABC
+│       ├── message.py
+│       ├── plugin.py                       # Provider / ToolPlugin / IMAdapter / factories + PluginManager
+│       ├── prompt.py                       # PromptBuilder
+│       ├── ratelimit.py                    # TokenBucket
+│       ├── session.py                      # SessionStore ABC
+│       └── _builtin_wrappers.py           # builtin plugin registry (fallback)
+├── plugins/                                # uv workspace of in-tree plugins
+└── docs/plugin-authoring.md
 ```
 
 ## Development
 
 ```bash
-uv pip install -e ".[dev]"
-pytest                  # run tests
+uv sync --all-packages        # install all workspace packages
+pytest                        # run tests
 ```
 
 Lint and type-check configurations live in `pyproject.toml`.
