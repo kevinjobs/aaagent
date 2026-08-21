@@ -64,6 +64,14 @@ ADAPTER_REGISTRY: dict[str, type[IMAdapter]] = {
 
 
 def _resolve_provider(name: str, cfg: dict[str, Any]) -> LLMProvider | None:
+    return _resolve_provider_from_registry(name, cfg, PROVIDER_TYPE_REGISTRY)
+
+
+def _resolve_provider_from_registry(
+    name: str,
+    cfg: dict[str, Any],
+    registry: dict[str, type[LLMProvider]],
+) -> LLMProvider | None:
     provider_type = cfg.get("type", "")
 
     if provider_type == "custom":
@@ -80,7 +88,7 @@ def _resolve_provider(name: str, cfg: dict[str, Any]) -> LLMProvider | None:
             return None
         return cls(name=name, config=cfg)
 
-    provider_cls = PROVIDER_TYPE_REGISTRY.get(provider_type)
+    provider_cls = registry.get(provider_type)
     if provider_cls is None:
         logger.error("Unknown provider type '%s' for provider '%s'", provider_type, name)
         return None
@@ -92,23 +100,28 @@ class Application:
         self,
         config_path: str = "config.yaml",
         enabled_adapters: list[str] | None = None,
+        bus: EventBus | None = None,
+        session_store: SessionStore | None = None,
+        memory: MemoryStore | None = None,
+        tool_registry: ToolRegistry | None = None,
+        providers: dict[str, LLMProvider] | None = None,
     ) -> None:
         from dotenv import load_dotenv
         load_dotenv()
         self._config = self._load_config(config_path)
-        self._bus = EventBus()
-        self._session_store = SessionStore(
+        self._bus = bus if bus is not None else EventBus()
+        self._session_store = session_store if session_store is not None else SessionStore(
             max_history=self._config.get("session", {}).get("max_history", 20),
             compress_threshold=self._config.get("session", {}).get("compress_threshold", 0.8),
             system_prompt=self._config.get("system_prompt", ""),
         )
         self._adapters: list[IMAdapter] = []
-        self._providers: dict[str, LLMProvider] = {}
+        self._providers: dict[str, LLMProvider] = providers if providers is not None else {}
         self._provider: LLMProvider | None = None
-        self._memory = MemoryStore(
+        self._memory = memory if memory is not None else MemoryStore(
             data_dir=self._config.get("memory", {}).get("data_dir", "data/memories"),
         )
-        self._tool_registry = self._setup_tool_registry()
+        self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
         self._setup()
 
@@ -157,7 +170,8 @@ class Application:
         return registry
 
     def _setup(self) -> None:
-        self._setup_providers()
+        if not self._providers:
+            self._setup_providers()
         self._setup_adapters()
         self._setup_event_handlers()
 
@@ -165,10 +179,12 @@ class Application:
         providers_cfg = self._config.get("providers", {})
         default_name = self._config.get("default_provider", "")
 
+        self._provider_registry = dict(PROVIDER_TYPE_REGISTRY)
+
         for name, cfg in providers_cfg.items():
             if not cfg.get("enabled", False):
                 continue
-            provider = _resolve_provider(name, cfg)
+            provider = _resolve_provider_from_registry(name, cfg, self._provider_registry)
             if provider is None:
                 continue
             self._providers[name] = provider
@@ -349,13 +365,40 @@ class Application:
             logger.error("No adapters configured, nothing to run")
             return
 
+        self._health_task = asyncio.create_task(self._health_check_loop())
         try:
             tasks = [adapter.start() for adapter in self._adapters]
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             await self.stop()
 
+    async def _health_check_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                break
+            for adapter in list(self._adapters):
+                try:
+                    ok = await adapter.health_check()
+                    if not ok:
+                        logger.warning(
+                            "Adapter %s health check failed",
+                            type(adapter).__name__,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Adapter %s health_check raised",
+                        type(adapter).__name__,
+                    )
+
+    def _cancel_health_task(self) -> None:
+        task = getattr(self, "_health_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+
     async def stop(self) -> None:
+        self._cancel_health_task()
         await self._memory.close()
         for adapter in self._adapters:
             try:
