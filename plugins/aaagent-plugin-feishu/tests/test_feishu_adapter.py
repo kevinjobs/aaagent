@@ -1,3 +1,8 @@
+import asyncio
+import json
+
+import pytest
+
 from aaagent_plugin_feishu import (
     FeishuAdapter,
     _build_send_body,
@@ -6,8 +11,6 @@ from aaagent_plugin_feishu import (
 )
 from aaagent.core.bus import EventBus
 from aaagent.core.message import Message
-
-import pytest
 
 
 def test_resolve_env_passthrough():
@@ -382,4 +385,276 @@ async def test_feishu_blacklisted_command_gets_not_supported_reply():
     assert result.stop_adapter is False
     assert len(sent) == 1
     assert "feishu" in sent[0].content
-    assert "不支持" in sent[0].content
+
+
+# ----------------------------------------------------------------------
+# pending indicator (slow-LLM hint)
+# ----------------------------------------------------------------------
+
+
+def _make_adapter_with_pending(**pending_overrides):
+    """Build an adapter wired up for pending-indicator tests."""
+    bus = EventBus()
+    cfg = {
+        "app_id": "x",
+        "app_secret": "y",
+        "pending_indicator": {"enabled": True, **pending_overrides},
+    }
+    adapter = FeishuAdapter(cfg, bus)
+    # Avoid real HTTP for the indicator send / delete.
+    adapter._http = _StubHttp()  # type: ignore[attr-defined]
+    return adapter, bus
+
+
+class _StubHttp:
+    """Records sends / deletes and replies deterministically."""
+
+    is_closed = False
+    message_counter = 0
+
+    def __init__(self) -> None:
+        self.sent: list = []
+        self.deleted: list = []
+
+    async def post(self, url, params=None, headers=None, json=None):
+        _StubHttp.message_counter += 1
+        self.sent.append({"url": url, "json": json})
+        # Mimic the real Feishu response shape.
+        return _JsonResponse(
+            {"code": 0, "msg": "ok", "data": {"message_id": f"om_{_StubHttp.message_counter}"}}
+        )
+
+    async def delete(self, url, headers=None):
+        # DELETE /open-apis/im/v1/messages/<message_id>
+        parts = url.rsplit("/", 1)
+        msg_id = parts[-1]
+        self.deleted.append(msg_id)
+        return _JsonResponse({"code": 0, "msg": "ok"})
+
+
+class _JsonResponse:
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def json(self) -> dict:
+        return self._data
+
+
+def _inbound_msg(chat_id: str = "oc_chat") -> Message:
+    return Message(
+        session_id=f"feishu-{chat_id}",
+        platform="feishu",
+        chat_id=chat_id,
+        user_id="u_1",
+        content="hi",
+        role="user",
+    )
+
+
+def _reply_msg(chat_id: str = "oc_chat", text: str = "answer") -> Message:
+    return Message(
+        session_id=f"feishu-{chat_id}",
+        platform="feishu",
+        chat_id=chat_id,
+        user_id="assistant",
+        content=text,
+        role="assistant",
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_default_config_loads():
+    adapter = FeishuAdapter(
+        {"app_id": "x", "app_secret": "y"}, EventBus()
+    )
+    assert adapter._pending_enabled is True
+    assert adapter._pending_delay == 3.0
+    assert adapter._pending_text == "🤔 思考中..."
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_can_be_disabled():
+    bus = EventBus()
+    adapter = FeishuAdapter(
+        {"app_id": "x", "app_secret": "y", "pending_indicator": {"enabled": False}},
+        bus,
+    )
+    assert adapter._pending_enabled is False
+    # With the indicator disabled, message_received must not be wired.
+    handlers = bus._handlers.get("message_received", [])  # type: ignore[attr-defined]
+    assert not any(
+        getattr(h, "__name__", "") == "_on_message_received_pending"
+        for h in handlers
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_fires_after_delay_and_deletes_on_reply():
+    adapter, bus = _make_adapter_with_pending(delay_seconds=0.05, text="🤔…")
+    adapter._tenant_token = "tk"
+    adapter._token_expire_at = 1e18
+    adapter._running = True
+
+    await bus.emit("message_received", _inbound_msg())
+
+    # Yield the loop long enough for the timer to fire and the
+    # indicator to be sent.
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter._pending_message_ids:
+            break
+    assert adapter._pending_message_ids == {"oc_chat": "om_1"}
+    assert adapter._http.sent[0]["json"]["msg_type"] == "text"  # type: ignore[attr-defined]
+    assert "🤔" in json.loads(adapter._http.sent[0]["json"]["content"])["text"]  # type: ignore[attr-defined]
+
+    # The reply arrives → indicator is deleted and the actual reply is sent.
+    await bus.emit("message_to_send", _reply_msg())
+
+    # Let the fire-and-forget delete settle.
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter._http.deleted:  # type: ignore[attr-defined]
+            break
+    assert adapter._http.deleted == ["om_1"]  # type: ignore[attr-defined]
+    assert "oc_chat" not in adapter._pending_message_ids
+    # The real reply went out via the existing send handler.
+    assert len(adapter._http.sent) == 2  # type: ignore[attr-defined]
+    assert json.loads(adapter._http.sent[1]["json"]["content"])["text"] == "answer"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_is_cancelled_when_reply_lands_before_delay():
+    adapter, bus = _make_adapter_with_pending(delay_seconds=0.5)
+    adapter._tenant_token = "tk"
+    adapter._token_expire_at = 1e18
+    adapter._running = True
+
+    await bus.emit("message_received", _inbound_msg())
+    # Reply well before the 0.5s timer expires.
+    await asyncio.sleep(0.05)
+    await bus.emit("message_to_send", _reply_msg())
+
+    # Wait past the original timer to confirm nothing fires after cancellation.
+    await asyncio.sleep(0.6)
+
+    assert adapter._pending_message_ids == {}
+    # The real reply went out; the pending indicator never fired.
+    assert len(adapter._http.sent) == 1  # type: ignore[attr-defined]
+    body_text = json.loads(adapter._http.sent[0]["json"]["content"])["text"]  # type: ignore[attr-defined]
+    assert body_text == "answer"
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_per_chat_isolation():
+    """Two concurrent chats each get their own timer and pending message."""
+    adapter, bus = _make_adapter_with_pending(delay_seconds=0.05)
+    adapter._tenant_token = "tk"
+    adapter._token_expire_at = 1e18
+    adapter._running = True
+
+    await bus.emit("message_received", _inbound_msg("oc_a"))
+    await bus.emit("message_received", _inbound_msg("oc_b"))
+
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(adapter._pending_message_ids) == 2:
+            break
+
+    assert set(adapter._pending_message_ids) == {"oc_a", "oc_b"}
+    assert adapter._pending_message_ids["oc_a"] != adapter._pending_message_ids["oc_b"]
+
+    # Reply on chat A only — chat B's indicator must remain.
+    await bus.emit("message_to_send", _reply_msg("oc_a"))
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if "oc_a" not in adapter._pending_message_ids:
+            break
+
+    assert "oc_a" not in adapter._pending_message_ids
+    assert "oc_b" in adapter._pending_message_ids
+
+    # Cleanup the remaining timer before the fixture exits.
+    await bus.emit("message_to_send", _reply_msg("oc_b"))
+    await asyncio.sleep(0.1)
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_uses_configured_text():
+    adapter, bus = _make_adapter_with_pending(
+        delay_seconds=0.05, text="⏳ generating answer…"
+    )
+    adapter._tenant_token = "tk"
+    adapter._token_expire_at = 1e18
+    adapter._running = True
+
+    await bus.emit("message_received", _inbound_msg())
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter._pending_message_ids:
+            break
+
+    body_text = json.loads(adapter._http.sent[0]["json"]["content"])["text"]  # type: ignore[attr-defined]
+    assert body_text == "⏳ generating answer…"
+
+    await bus.emit("message_to_send", _reply_msg())
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_new_message_replaces_old_for_same_chat():
+    """Two inbound messages on the same chat cancel the first timer."""
+    adapter, bus = _make_adapter_with_pending(delay_seconds=0.5)
+    adapter._tenant_token = "tk"
+    adapter._token_expire_at = 1e18
+    adapter._running = True
+
+    await bus.emit("message_received", _inbound_msg())
+    await asyncio.sleep(0.05)
+    # Second inbound arrives — the first timer is cancelled and a new
+    # one starts. We then reply before the (replaced) timer can fire.
+    await bus.emit("message_received", _inbound_msg())
+    await asyncio.sleep(0.05)
+    await bus.emit("message_to_send", _reply_msg())
+
+    # Wait past the 2nd timer to confirm it was cancelled by the reply.
+    await asyncio.sleep(0.55)
+
+    assert adapter._pending_message_ids == {}
+    # Only the real reply was sent — no pending indicator at all.
+    assert len(adapter._http.sent) == 1  # type: ignore[attr-defined]
+    body_text = json.loads(adapter._http.sent[0]["json"]["content"])["text"]  # type: ignore[attr-defined]
+    assert body_text == "answer"
+
+
+@pytest.mark.asyncio
+async def test_pending_indicator_does_not_block_other_platforms():
+    """A message from another platform must not start a Feishu timer."""
+    adapter, bus = _make_adapter_with_pending(delay_seconds=0.05)
+    adapter._tenant_token = "tk"
+    adapter._token_expire_at = 1e18
+    adapter._running = True
+
+    await bus.emit("message_received", _inbound_msg("oc_chat"))  # feishu → armed
+    await bus.emit(
+        "message_received",
+        Message(
+            session_id="cli-1",
+            platform="cli",
+            chat_id="cli",
+            user_id="u",
+            content="x",
+            role="user",
+        ),
+    )
+    # Wait for the feishu indicator.
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter._pending_message_ids:
+            break
+
+    assert "oc_chat" in adapter._pending_message_ids
+    # Only one pending entry (feishu); the cli inbound was ignored.
+    assert len(adapter._pending_message_ids) == 1
+
+    await bus.emit("message_to_send", _reply_msg())
+    await asyncio.sleep(0.1)

@@ -20,6 +20,7 @@ from aaagent.core.plugin import IMAdapter
 FEISHU_DOMAIN = "https://open.feishu.cn"
 GEN_ENDPOINT_URI = "/callback/ws/endpoint"
 SEND_MESSAGE_URI = "/open-apis/im/v1/messages"
+DELETE_MESSAGE_URI = "/open-apis/im/v1/messages/{message_id}"
 TENANT_TOKEN_URI = "/open-apis/auth/v3/tenant_access_token/internal"
 
 HTTP_TIMEOUT = 10.0
@@ -28,6 +29,7 @@ SEND_MAX_RETRIES = 3
 SEEN_MESSAGES_CAP = 10000
 WS_BACKOFF_BASE = 1.0
 WS_BACKOFF_MAX = 60.0
+PENDING_DEFAULT_DELAY_S = 3.0
 FEISHU_DEBUG = os.environ.get("FEISHU_DEBUG", "").lower() in ("1", "true", "yes")
 
 _MD_MARKERS = re.compile(
@@ -68,6 +70,22 @@ class FeishuAdapter(IMAdapter):
             )
             fmt = "auto"
         self._message_format = fmt
+
+        # pending_indicator: show a temporary "thinking…" message after
+        # `delay_seconds` if the LLM hasn't replied yet, then delete it
+        # when the real reply arrives. Keeps chat history clean.
+        pending_cfg = config.get("pending_indicator", {}) or {}
+        self._pending_enabled = bool(pending_cfg.get("enabled", True))
+        self._pending_delay = float(
+            pending_cfg.get("delay_seconds", PENDING_DEFAULT_DELAY_S)
+        )
+        self._pending_text = str(
+            pending_cfg.get("text", "🤔 思考中...")
+        )
+        # per-chat pending state
+        self._pending_tasks: dict[str, asyncio.Task] = {}
+        self._pending_message_ids: dict[str, str] = {}
+
         self._running = False
         self._stop_event = asyncio.Event()
         self._ws_task: asyncio.Task | None = None
@@ -87,6 +105,9 @@ class FeishuAdapter(IMAdapter):
 
         self.bus.on("message_to_send", self._on_message_to_send)
         self.bus.on("slash_reply", self._on_slash_reply)
+        if self._pending_enabled:
+            self.bus.on("message_received", self._on_message_received_pending)
+            self.bus.on("message_to_send", self._on_message_to_send_pending)
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
@@ -175,11 +196,17 @@ class FeishuAdapter(IMAdapter):
         )
         return content[:MAX_FEISHU_MSG_LEN]
 
-    async def send(self, msg: Message) -> None:
+    async def send(self, msg: Message) -> str | None:
+        """Send a message via Feishu.
+
+        Returns the platform-side `message_id` on success (useful for the
+        pending-indicator path that needs to delete the message later) or
+        `None` on failure. Existing callers can ignore the return value.
+        """
         chat_id = msg.chat_id
         if not chat_id:
             logger.error("Cannot send Feishu message: missing chat_id")
-            return
+            return None
 
         content = self._truncate_for_feishu(msg.content)
         fmt = self._message_format
@@ -192,7 +219,7 @@ class FeishuAdapter(IMAdapter):
             try:
                 await self._ensure_token()
                 if not self._tenant_token:
-                    return
+                    return None
 
                 client = await self._get_http()
                 resp = await client.post(
@@ -207,14 +234,15 @@ class FeishuAdapter(IMAdapter):
                 data = resp.json()
                 code = data.get("code")
                 if code == 0:
-                    return
+                    msg_id = (data.get("data") or {}).get("message_id", "")
+                    return msg_id or None
                 if code is not None and code not in (429, 500, 501, 502, 503):
                     logger.error(
                         "Feishu send failed: code=%s msg=%s",
                         code,
                         data.get("msg"),
                     )
-                    return
+                    return None
                 logger.warning(
                     "Feishu send transient failure code=%s (attempt %s/%s)",
                     code,
@@ -233,6 +261,45 @@ class FeishuAdapter(IMAdapter):
                 await asyncio.sleep(0.5 * (2**attempt))
 
         logger.error("Feishu send failed after %s attempts", SEND_MAX_RETRIES)
+        return None
+
+    async def delete_message(self, message_id: str) -> bool:
+        """Delete a previously sent message by id. Returns True on success.
+
+        Used by the pending-indicator path to remove the temporary
+        "thinking…" message before the real reply lands. Failures are
+        logged but never raised: a delete failure should not block the
+        real reply from being delivered.
+        """
+        if not message_id:
+            return False
+        try:
+            await self._ensure_token()
+            if not self._tenant_token:
+                return False
+            client = await self._get_http()
+            url = f"{self._domain}{DELETE_MESSAGE_URI.format(message_id=message_id)}"
+            resp = await client.delete(
+                url,
+                headers={
+                    "Authorization": f"Bearer {self._tenant_token}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+            )
+            data = resp.json()
+            code = data.get("code")
+            if code == 0:
+                return True
+            logger.warning(
+                "Feishu delete failed for message_id=%s: code=%s msg=%s",
+                message_id,
+                code,
+                data.get("msg"),
+            )
+            return False
+        except Exception as e:
+            logger.warning("Feishu delete error for message_id=%s: %s", message_id, e)
+            return False
 
     async def _ensure_token(self) -> None:
         if self._tenant_token and time.time() < self._token_expire_at - 60:
@@ -511,6 +578,85 @@ class FeishuAdapter(IMAdapter):
                 role="assistant",
             )
         )
+
+    # ---- pending indicator -------------------------------------------
+    #
+    # When the LLM is slow, post a temporary "thinking…" message after
+    # `pending_indicator.delay_seconds` and delete it as soon as the
+    # real reply (or a tool start) lands. Each chat is tracked
+    # independently so concurrent sessions don't interfere.
+
+    async def _on_message_received_pending(self, msg: Message) -> None:
+        if msg.platform != "feishu":
+            return
+        chat_id = msg.chat_id
+        if not chat_id:
+            return
+        # Cancel any in-flight timer for this chat; the LLM is still
+        # busy on the previous message so the new request starts a
+        # fresh countdown.
+        await self._cancel_pending_for_chat(chat_id, delete_pending=False)
+        task = asyncio.create_task(
+            self._delayed_pending_send(chat_id),
+            name=f"feishu-pending:{chat_id}",
+        )
+        self._pending_tasks[chat_id] = task
+
+    async def _delayed_pending_send(self, chat_id: str) -> None:
+        try:
+            await asyncio.sleep(self._pending_delay)
+        except asyncio.CancelledError:
+            return
+        # A newer pending task may have replaced us (the user sent
+        # another message) — or the reply may have arrived before the
+        # timer expired but before cancellation could be observed.
+        # Compare by task identity so we don't double-post.
+        if self._pending_tasks.get(chat_id) is not asyncio.current_task():
+            return
+        if not self._running or not self._tenant_token:
+            return
+        sent_id = await self.send(
+            Message(
+                session_id=f"feishu-{chat_id}",
+                platform="feishu",
+                chat_id=chat_id,
+                user_id="assistant",
+                content=self._pending_text,
+                role="assistant",
+            )
+        )
+        if sent_id:
+            self._pending_message_ids[chat_id] = sent_id
+
+    async def _on_message_to_send_pending(self, msg: Message) -> None:
+        if msg.platform != "feishu":
+            return
+        chat_id = msg.chat_id
+        if not chat_id:
+            return
+        # Cancel the countdown and delete the indicator if it was sent.
+        await self._cancel_pending_for_chat(chat_id, delete_pending=True)
+
+    async def _cancel_pending_for_chat(
+        self, chat_id: str, *, delete_pending: bool
+    ) -> None:
+        task = self._pending_tasks.pop(chat_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Pending timer cancelled with error: %s", e)
+        if not delete_pending:
+            return
+        pending_msg_id = self._pending_message_ids.pop(chat_id, None)
+        if pending_msg_id:
+            # Fire-and-forget delete; failures must not block the
+            # real reply from being delivered (it is sent by the
+            # other _on_message_to_send handler).
+            asyncio.create_task(self.delete_message(pending_msg_id))
 
     def _extract_text(self, content: str, msg_type: str) -> str:
         if msg_type != "text":

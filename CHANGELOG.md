@@ -2,6 +2,45 @@
 
 ## 0.4.5 - Unreleased
 
+### Feishu: "thinking…" indicator for slow LLM replies
+
+`aaagent-plugin-feishu` now posts a temporary "thinking…" message
+after a configurable delay if the LLM hasn't replied yet, then deletes
+it as soon as the real reply lands. This gives the user immediate
+feedback that the bot is alive during slow LLM/tool runs (long MCP
+calls, big model warmup, etc.) without cluttering the chat history.
+
+```yaml
+adapters:
+  feishu:
+    app_id: ${FEISH_APP_ID}
+    app_secret: ${FEISH_APP_SECRET}
+    pending_indicator:
+      enabled: true          # default
+      delay_seconds: 3.0     # default; 0 disables effectively
+      text: "🤔 思考中..."     # default
+```
+
+- Default config ships enabled. To opt out, set
+  `pending_indicator.enabled: false`.
+- Per-chat state: each `(chat_id)` runs its own timer; concurrent
+  chats don't interfere.
+- Cancel-on-replace: a new inbound message on the same chat cancels
+  the in-flight timer.
+- Cancel-on-reply: a `message_to_send` for the same chat cancels the
+  timer and deletes the indicator before the real reply goes out.
+- Failure-tolerant: a delete failure logs a warning but never blocks
+  the real reply (the actual send is fired by the existing
+  `_on_message_to_send` handler, in parallel with the delete).
+
+### Internals
+
+- `FeishuAdapter.send()` now returns the platform-side `message_id` on
+  success (or `None` on failure). Existing callers ignore the return
+  value; back-compat preserved.
+- New `FeishuAdapter.delete_message(message_id)` wraps
+  `DELETE /open-apis/im/v1/messages/{message_id}`.
+
 ### Test layout: core tests in `src/aaagent/tests/`, plugin tests in each plugin
 
 Before: a single flat `tests/` at repo root held all 27 tests for the

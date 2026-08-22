@@ -45,6 +45,13 @@ adapters:
     app_id: ${FEISHU_APP_ID}
     app_secret: ${FEISHU_APP_SECRET}
     message_format: auto
+    # Pending-indicator: when the LLM takes more than `delay_seconds`
+    # to reply, post a temporary "thinking…" message and delete it
+    # before the real reply lands. Set `enabled: false` to disable.
+    pending_indicator:
+      enabled: true
+      delay_seconds: 3.0
+      text: "🤔 思考中..."
   wechat:
     enabled: false
     token: ''
