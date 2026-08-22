@@ -13,6 +13,10 @@
   fall back to title + first paragraph + link list.
 - Both registered as workspace members; config snippets in `README.md`
   and `config.yaml`; `TAVILY_API_KEY` documented in `.env.example`.
+- `websearch` plugin resolves `${ENV_VAR}` placeholders via
+  `aaagent.core.envutil.resolve_env` and raises on missing key; previously
+  the literal placeholder string was forwarded to the backend and caused
+  spurious 401s.
 
 ### Memory & Retrieval
 - `MemoryStore.recall` accepts an optional `tags` filter

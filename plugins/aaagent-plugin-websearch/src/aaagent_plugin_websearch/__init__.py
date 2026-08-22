@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from aaagent.core.envutil import resolve_env
 from aaagent.core.plugin import ToolPlugin
 
 from .backends.base import Backend, SearchResult
@@ -113,7 +114,12 @@ class WebSearchToolsPlugin(ToolPlugin):
                 f"Available: {sorted(_BACKENDS)}"
             )
 
-        api_key = cfg.get("api_key") or ""
+        api_key = resolve_env(cfg.get("api_key") or "").strip()
+        if not api_key:
+            raise RuntimeError(
+                "websearch api_key missing (set the env var referenced in "
+                "tools.websearch.api_key, e.g. TAVILY_API_KEY in .env)"
+            )
         try:
             self._backend = backend_cls(api_key=api_key)
         except ValueError as e:

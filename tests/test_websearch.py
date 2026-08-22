@@ -202,3 +202,59 @@ async def test_web_search_tool_backend_error_is_caught():
     finally:
         await plugin.close()
     assert "Error" in out and "500" in out
+
+
+def test_register_resolves_env_placeholder(monkeypatch):
+    monkeypatch.setenv("TAVILY_TEST_KEY", "sk-real-12345")
+    plugin = WebSearchToolsPlugin()
+    registry = type("R", (), {"register": lambda self, **kw: None})()
+    plugin.register(
+        registry,
+        {
+            "tools": {
+                "websearch": {
+                    "enabled": True,
+                    "backend": "tavily",
+                    "api_key": "${TAVILY_TEST_KEY}",
+                }
+            }
+        },
+    )
+    assert plugin._backend._api_key == "sk-real-12345"
+
+
+def test_register_strips_whitespace():
+    plugin = WebSearchToolsPlugin()
+    registry = type("R", (), {"register": lambda self, **kw: None})()
+    plugin.register(
+        registry,
+        {
+            "tools": {
+                "websearch": {
+                    "enabled": True,
+                    "backend": "tavily",
+                    "api_key": "  tvly-abc  ",
+                }
+            }
+        },
+    )
+    assert plugin._backend._api_key == "tvly-abc"
+
+
+def test_register_raises_on_missing_key(monkeypatch):
+    monkeypatch.delenv("TAVILY_DEFINITELY_NOT_SET", raising=False)
+    plugin = WebSearchToolsPlugin()
+    registry = type("R", (), {"register": lambda self, **kw: None})()
+    with pytest.raises(RuntimeError, match="api_key missing"):
+        plugin.register(
+            registry,
+            {
+                "tools": {
+                    "websearch": {
+                        "enabled": True,
+                        "backend": "tavily",
+                        "api_key": "${TAVILY_DEFINITELY_NOT_SET}",
+                    }
+                }
+            },
+        )
