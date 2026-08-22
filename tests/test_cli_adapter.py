@@ -158,8 +158,13 @@ async def test_end_to_end_slash_command_flow():
     os.close(fd)
     with open(cfg_path, "w", encoding="utf-8") as f:
         f.write(
-            "default_provider: x\n"
-            "providers:\n  x: {type: custom, class: tests.conftest.FakeProvider, enabled: true}\n"
+            "providers:\n"
+            "  _meta:\n"
+            "    default: x\n"
+            "  x:\n"
+            "    type: custom\n"
+            "    class: tests.conftest.FakeProvider\n"
+            "    enabled: true\n"
         )
 
     try:

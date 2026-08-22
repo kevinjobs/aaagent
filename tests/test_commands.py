@@ -400,7 +400,7 @@ async def test_models_lists_with_default_and_current():
     app = SimpleNamespace(
         _providers={"minmax": p_a, "deepseek": p_b},
         _provider=p_a,
-        _config={"default_provider": "minmax"},
+        _config={"providers": {"_meta": {"default": "minmax"}}},
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
@@ -442,7 +442,11 @@ class _FakeApp:
             providers[name] = inner
         self._config = CommentedMap()
         self._config["providers"] = providers
-        self._config["default_provider"] = default_provider
+        # Routing metadata lives under providers._meta (not at the
+        # top level — matches the new config layout).
+        meta = CommentedMap()
+        meta["default"] = default_provider
+        providers["_meta"] = meta
         self._providers: dict = {}
         self._provider_order: list = []
         self._provider: Any = None
@@ -574,7 +578,7 @@ async def test_model_new_sets_default_when_flagged():
         ctx,
     )
     assert "set as default" in (result.reply or "")
-    assert app._config["default_provider"] == "foo"
+    assert app._config["providers"]["_meta"]["default"] == "foo"
     assert app._provider.name == "foo"
 
 
@@ -596,7 +600,7 @@ async def test_model_default_flag_updates_default_provider():
         "/model --provider deepseek --model coder -default", ctx
     )
     assert "set as default" in (result.reply or "")
-    assert app._config["default_provider"] == "deepseek"
+    assert app._config["providers"]["_meta"]["default"] == "deepseek"
 
 
 @pytest.mark.asyncio

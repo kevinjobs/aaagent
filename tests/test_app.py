@@ -12,8 +12,9 @@ from aaagent_plugin_markdownstore import MarkdownMemoryStore
 def _write_minimal_config(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
-        "default_provider: fake\n"
         "providers:\n"
+        "  _meta:\n"
+        "    default: fake\n"
         "  fake:\n"
         "    type: custom\n"
         "    class: tests.conftest.FakeProvider\n"
@@ -215,10 +216,12 @@ class _RaisingProvider(LLMProvider):
 def _fallback_cfg(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
-        "default_provider: primary\n"
-        "fallback_providers:\n"
-        "  - backup\n"
-        "  - absent\n",
+        "providers:\n"
+        "  _meta:\n"
+        "    default: primary\n"
+        "    fallback:\n"
+        "      - backup\n"
+        "      - absent\n",
         encoding="utf-8",
     )
     return str(cfg)

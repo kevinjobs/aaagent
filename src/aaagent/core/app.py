@@ -288,9 +288,10 @@ class Application:
 
     def _setup_providers(self) -> None:
         providers_cfg = self._config.get("providers", {})
-        default_name = self._config.get("default_provider", "")
 
         for name, cfg in providers_cfg.items():
+            if name == "_meta":
+                continue
             if not cfg.get("enabled", False):
                 continue
             provider = self._instantiate_provider(name, cfg)
@@ -355,8 +356,14 @@ class Application:
         `self._provider` is the primary used for latency-sensitive calls;
         `self._provider_order` is the ordered list consulted by
         `_chat_with_fallback` when the primary fails transiently.
+
+        Routing data lives under `providers._meta` (default + fallback);
+        top-level `default_provider` / `fallback_providers` are silently
+        ignored to keep all provider config in one place.
         """
-        default_name = self._config.get("default_provider", "")
+        providers_block = self._config.get("providers", {}) or {}
+        meta = providers_block.get("_meta", {}) or {}
+        default_name = meta.get("default", "")
 
         if default_name in self._providers:
             self._provider = self._providers[default_name]
@@ -372,7 +379,7 @@ class Application:
         order: list[LLMProvider] = []
         if self._provider is not None:
             order.append(self._provider)
-        for name in self._config.get("fallback_providers", []) or []:
+        for name in meta.get("fallback", []) or []:
             provider = self._providers.get(name)
             if provider is None:
                 logger.warning(

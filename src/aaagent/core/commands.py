@@ -314,7 +314,8 @@ def _models_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
         if not app._providers:
             return SlashResult(reply="No providers configured.")
         cfg = app._config
-        default_name = cfg.get("default_provider", "") if cfg else ""
+        meta = (cfg.get("providers", {}) or {}).get("_meta", {}) if cfg else {}
+        default_name = meta.get("default", "")
         current_name = app._provider.name if app._provider else ""
         lines = ["Available providers:"]
         for name in sorted(app._providers.keys()):
@@ -395,7 +396,9 @@ def _model_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
         app._providers[pname] = new_inst
 
         if is_default:
-            cfg["default_provider"] = pname
+            providers_block = cfg.setdefault("providers", {})
+            meta = providers_block.setdefault("_meta", {})
+            meta["default"] = pname
             app._provider = new_inst
             if new_inst in app._provider_order:
                 app._provider_order.remove(new_inst)

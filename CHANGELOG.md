@@ -2,6 +2,17 @@
 
 ## 0.3.1 - Unreleased
 
+### Breaking changes
+- **Provider routing moved into `providers._meta`**. The top-level
+  `default_provider:` and `fallback_providers:` keys are no longer
+  read; both now live under `providers._meta.default` and
+  `providers._meta.fallback` so every provider-related setting is in
+  one place. `_meta` is a reserved key inside the `providers:` block
+  and is skipped during provider instantiation. Migration: edit
+  `config.yaml` manually (no runtime fallback). `Application` now
+  reads `providers._meta.default` / `.fallback`; `/model -default`
+  writes to `providers._meta.default`; `/models` reads the same.
+
 ### Adapters
 - **feishu**: new `adapters.feishu.message_format` config option
   (`text` | `markdown` | `auto`, default `auto`). `text` keeps the
