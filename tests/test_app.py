@@ -227,6 +227,19 @@ def _fallback_cfg(tmp_path):
     return str(cfg)
 
 
+def test_missing_config_auto_copies_example(tmp_path):
+    """First run: config.yaml absent -> _load_config copies example."""
+    example = tmp_path / "config.yaml.example"
+    example.write_text("providers:\n  _meta:\n    default: fake\n", encoding="utf-8")
+
+    cfg = tmp_path / "config.yaml"
+    app = Application(config_path=str(cfg), enabled_adapters=[])
+    assert cfg.exists()
+    assert cfg.read_text(encoding="utf-8") == example.read_text(
+        encoding="utf-8"
+    )
+
+
 @pytest.mark.asyncio
 async def test_chat_with_fallback_switches_provider(tmp_path):
     cfg = _fallback_cfg(tmp_path)
