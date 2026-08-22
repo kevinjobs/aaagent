@@ -115,7 +115,11 @@ def test_build_send_body_markdown():
 
     card = _json.loads(body["content"])
     assert card["schema"] == "2.0"
-    elements = card["card"]["body"]["elements"]
+    # Card v2: schema + body live at the root of the content payload.
+    # A `card` wrapper is invalid and Feishu rejects it
+    # ("unknown property, property: card").
+    assert "card" not in card
+    elements = card["body"]["elements"]
     assert len(elements) == 1
     assert elements[0]["tag"] == "markdown"
     assert elements[0]["content"] == "# Title\n\n**bold**"
@@ -234,7 +238,8 @@ async def test_send_markdown_format_uses_card_v2():
     body = captured[0]["json"]
     assert body["msg_type"] == "interactive"
     card = _json.loads(body["content"])
-    elements = card["card"]["body"]["elements"]
+    assert "card" not in card  # Card v2 has no `card` wrapper
+    elements = card["body"]["elements"]
     assert elements[0]["tag"] == "markdown"
     assert elements[0]["content"] == "**bold** and `code`"
 

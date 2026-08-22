@@ -544,12 +544,10 @@ def _build_send_body(chat_id: str, content: str, fmt: str) -> dict:
             "content": json.dumps(
                 {
                     "schema": "2.0",
-                    "card": {
-                        "body": {
-                            "elements": [
-                                {"tag": "markdown", "content": content}
-                            ]
-                        }
+                    "body": {
+                        "elements": [
+                            {"tag": "markdown", "content": content}
+                        ]
                     },
                 },
                 ensure_ascii=False,
