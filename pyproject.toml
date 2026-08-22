@@ -39,6 +39,20 @@ dev = [
     "fastmcp>=2",
 ]
 
+[tool.pytest.ini_options]
+# Aggregating the core and every plugin's tests under one rootdir so a
+# single `pytest` run from the repo root exercises the full workspace.
+# Each plugin also ships its own `[tool.pytest.ini_options]` so it can
+# be tested standalone (`cd plugins/aaagent-plugin-X && pytest`).
+#
+# The repo-root conftest.py programmatically extends sys.path to include
+# every plugin's `src/` directory so the core's test suite can resolve
+# plugin imports (e.g. `aaagent_plugin_shell.register` in
+# `test_commands.py`) without the tests living inside the plugin.
+testpaths = ["src/aaagent/tests", "plugins"]
+addopts = "-ra -q"
+asyncio_mode = "auto"
+
 [project.scripts]
 aaagent = "aaagent.cli:app"
 

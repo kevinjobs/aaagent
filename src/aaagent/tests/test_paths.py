@@ -100,7 +100,7 @@ def test_application_default_allowed_dirs_is_project_root(tmp_path):
         "    default: x\n"
         "  x:\n"
         "    type: custom\n"
-        "    class: tests.conftest.FakeProvider\n"
+        "    class: aaagent.testing.FakeProvider\n"
         "    enabled: true\n",
         encoding="utf-8",
     )

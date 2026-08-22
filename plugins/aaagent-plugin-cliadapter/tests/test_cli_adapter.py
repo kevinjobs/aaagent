@@ -163,7 +163,7 @@ async def test_end_to_end_slash_command_flow():
             "    default: x\n"
             "  x:\n"
             "    type: custom\n"
-            "    class: tests.conftest.FakeProvider\n"
+            "    class: aaagent.testing.FakeProvider\n"
             "    enabled: true\n"
         )
 

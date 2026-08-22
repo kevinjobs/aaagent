@@ -2,6 +2,44 @@
 
 ## 0.4.5 - Unreleased
 
+### Test layout: core tests in `src/aaagent/tests/`, plugin tests in each plugin
+
+Before: a single flat `tests/` at repo root held all 27 tests for the
+core and every plugin. After: tests live next to the code they test,
+each with its own `tests/` subdirectory.
+
+```
+/
+├── conftest.py                      # shared fixtures (tmp_memory_dir, fake_provider, fake_profile_provider)
+├── pyproject.toml                   # root pytest: testpaths = ["src/aaagent/tests", "plugins"]
+├── src/aaagent/
+│   ├── testing.py                   # new: public FakeProvider helper
+│   └── tests/                       # 12 core tests
+│       ├── test_app.py
+│       └── ...
+└── plugins/aaagent-plugin-X/
+    ├── pyproject.toml               # per-plugin pytest: testpaths = ["tests"]
+    └── tests/                       # plugin tests
+```
+
+- Two entry points for testing:
+  - **Repo-root `pytest`** — one command runs every test (340 tests)
+    across the core and all 15 plugins. The root `conftest.py` is
+    auto-discovered and wires every plugin's `src/` into `sys.path`
+    so the core's test suite can resolve plugin imports.
+  - **Per-plugin `cd plugins/aaagent-plugin-X && pytest`** — tests
+    just that plugin. The plugin's own `pyproject.toml` sets
+    `testpaths = ["tests"]` and `pythonpath = ["src"]`; the root
+    `conftest.py` is still auto-discovered (pytest walks up to the
+    repo root), so the shared `FakeProvider`, `tmp_memory_dir`, and
+    `fake_profile_provider` fixtures remain available to plugins that
+    need them.
+- `aaagent.testing.FakeProvider` replaces the old
+  `tests.conftest.FakeProvider` — the four test files that referenced
+  it by YAML string now use `aaagent.testing.FakeProvider`. The class
+  itself is unchanged; it's just moved to a public location so plugins
+  can import it without depending on the root tests package.
+
 ### `PluginContext` — single, explicit handle for plugin framework access
 
 Replaces the ad-hoc `hasattr(plugin, "set_memory")` / `set_application`

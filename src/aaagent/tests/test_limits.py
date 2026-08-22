@@ -19,7 +19,7 @@ def _write_cfg(tmp_path, *, max_tool_turns: int | None = None, max_tool_wallcloc
         "    default: fake",
         "  fake:",
         "    type: custom",
-        "    class: tests.conftest.FakeProvider",
+        "    class: aaagent.testing.FakeProvider",
         "    enabled: true",
         "tools:",
         "  shell:",

@@ -20,3 +20,15 @@ packages = ["src/aaagent_plugin_markdownstore"]
 
 [tool.uv.sources]
 aaagent = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra -q"
+asyncio_mode = "auto"

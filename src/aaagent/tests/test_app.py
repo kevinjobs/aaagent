@@ -17,7 +17,7 @@ def _write_minimal_config(tmp_path):
         "    default: fake\n"
         "  fake:\n"
         "    type: custom\n"
-        "    class: tests.conftest.FakeProvider\n"
+        "    class: aaagent.testing.FakeProvider\n"
         "    enabled: true\n"
         "tools:\n"
         "  shell:\n"
