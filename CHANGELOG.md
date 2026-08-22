@@ -95,6 +95,24 @@ Bug fixes discovered during QA (in the same commit):
   was kept for "future streaming input patterns" but was never
   used and would confuse type-checkers. Fix: removed.
 
+### Fix: chat view fills viewport, Composer fixed at bottom
+
+The chat surface was growing unbounded as messages accumulated:
+`ChatView`'s outer wrapper was `flex-1 overflow-hidden` but, without
+`min-h-0`, the flexbox shrink-to-content rule prevented it from
+shrinking below its children's intrinsic height — so `h-full` on
+the scroller resolved to the content height and `overflow-y-auto`
+never kicked in. Header (48 px) stayed at the top but the Composer
+at the bottom could be pushed past the viewport.
+
+Fix: the outermost wrapper is now `h-screen overflow-hidden`
+(fixed to the viewport), and `ChatView`'s outer wrapper gains
+`min-h-0` so `flex-1` actually fills the remaining space and the
+inner scroller becomes the only overflowing element. Header stays
+pinned at the top, Composer stays pinned at the bottom (textarea
+max-height 240 px). The page itself never overflows; only the
+scroller rolls.
+
 ### Fix: pin the active LLM provider for tool turns in the same message
 
 Cross-provider `tool_call_id`s are not portable — each provider mints

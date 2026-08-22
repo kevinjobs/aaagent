@@ -47,7 +47,9 @@ export function ChatView({ items, isStreaming, status }: ChatViewProps) {
   }, [items, isStreaming]);
 
   return (
-    <div className="relative flex-1 overflow-hidden">
+    <div
+      className="relative flex-1 min-h-0 overflow-hidden"
+    >
       <div
         ref={scrollerRef}
         className="h-full overflow-y-auto px-4 py-6"

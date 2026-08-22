@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useReducer, useState } from "react";
+import { cn } from "@/lib/utils";
 import { useWebSocket, type ServerFrame } from "@/hooks/useWebSocket";
 import { ChatView, type ChatItem } from "@/components/ChatView";
 import { Composer } from "@/components/Composer";
@@ -318,8 +319,16 @@ export default function App() {
   );
 
   return (
-    <div className={theme === "dark" ? "dark" : ""} data-theme={theme}>
-      <div className="flex h-full flex-col bg-background text-foreground">
+    <div
+      className="h-screen overflow-hidden"
+    >
+      <div
+        className={cn(
+          "flex h-full flex-col bg-background text-foreground",
+          theme === "dark" && "dark",
+        )}
+        data-theme={theme}
+      >
         <header className="flex h-12 items-center gap-2 border-b border-border px-4">
           <Bot className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-semibold">aaagent</span>
