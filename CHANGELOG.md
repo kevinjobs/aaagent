@@ -1,5 +1,130 @@
 # Changelog
 
+## 0.4.5 - Unreleased
+
+### `PluginContext` — single, explicit handle for plugin framework access
+
+Replaces the ad-hoc `hasattr(plugin, "set_memory")` / `set_application`
+probes that leaked the `Application` object into plugins. The core
+defines a single `PluginContext` dataclass:
+
+```python
+@dataclass
+class PluginContext:
+    event_bus: EventBus
+    session_store: SessionStore
+    memory_store: MemoryStore | None
+    project_root: Path
+    config: dict[str, Any]
+```
+
+`Application._setup_tool_registry` builds one `PluginContext` per
+startup and hands it to every tool plugin via the new
+`ToolPlugin.set_context(ctx)` hook (default no-op). Adding a new
+plugin-visible capability now means adding a field to `PluginContext`
+instead of inventing a new attribute probe.
+
+**Migrated plugins:**
+- `aaagent-plugin-memorytools` now reads `ctx.memory_store` instead of
+  using the legacy `set_memory` probe.
+- `aaagent-plugin-scheduler` now reads `ctx.event_bus` and
+  `ctx.project_root` instead of holding a back-reference to the
+  `Application` object.
+
+### `AgentLoop` — per-request agent loop is now pluggable
+
+The historical `_handle_message` / `_run_tool_loop` / `_stream_or_chat`
+/ `_run_tool_loop_with_limits` body moved out of `Application` into a
+new `aaagent.core.agent_loop` module:
+
+- `AgentLoop` — protocol with a single
+  `async handle_message(message, context) -> str` method.
+- `AgentContext` — the inputs a loop needs per request
+  (session_id, platform, chat_id, messages, tools, profile, system_prompt).
+- `DefaultAgentLoop` — the bundled implementation, taking a
+  back-reference to `Application` and reading `_chat_with_fallback`,
+  `_stream_or_chat`, `_tool_registry`, etc. from it.
+
+`Application.__init__(agent_loop=...)` accepts a custom loop. Default
+is `DefaultAgentLoop(self)` so existing behaviour is unchanged. Plugins
+can ship alternative loops (plan-and-execute, tree-of-thought,
+agent-as-tool, ...) without forking the framework.
+
+`Application._handle_message` is now ~20 lines: persist inbound
+message → build `AgentContext` → delegate to `self._agent_loop` →
+persist reply → emit `message_to_send`. The loop owns everything else.
+
+The `_THINK_RE` / `_UNCLOSED_THINK_RE` / `_strip_think` /
+`_PUBLIC_ERROR` constants moved into `agent_loop.py` (with re-exports
+in `app.py` so existing imports continue to work).
+
+### Core slim-down: builtin registry removed, default plugins via `pip extras`
+
+The core no longer carries a built-in registry of plugin classes. Every
+provider, tool, adapter, session store, memory store, and slash-command
+bundle is now discovered purely through `importlib.metadata.entry_points`,
+plus an optional `config.yaml` `plugins:` block. To get the example
+config working out of the box:
+
+```bash
+pip install 'aaagent[default]'
+```
+
+The `default` extra pulls in seven plugins (openai, inmemorysession,
+markdownstore, cliadapter, filetools, shelltools, memorytools, plus
+the new shell command bundle). The core has no knowledge of which
+packages fill those slots — only the entry-point groups.
+
+**Removed:**
+- `aaagent.core._builtin_wrappers` and the `BUILTIN_*` dicts on
+  `PluginManager`. Plugin discovery no longer has a "fallback to
+  in-tree classes" layer.
+- Direct-construction fallbacks in `Application.__init__` for session
+  and memory stores: if no plugin is installed, `Application` now
+  raises `PluginNotFoundError` rather than silently constructing an
+  abstract-class instance.
+- The bespoke CLI-adapter discovery path in `cli.py`; the chat
+  command now uses the same `PluginManager` the rest of the app
+  uses, so there is one and only one plugin-discovery surface.
+- The legacy `LLMProvider` shim in `_instantiate_provider`. The core
+  now accepts `Provider` instances directly; `LLMProvider` is retained
+  only as a back-compat alias so existing tests / `FakeProvider`
+  subclasses keep working.
+
+**Moved out of core into plugins:**
+- `/model`, `/compact`, `/session`, `/sessions` slash commands →
+  new `aaagent-plugin-shell` package (workspace member; pulled in via
+  `aaagent[default]`).
+- OpenAI-SDK-specific named exception classes (used for retry
+  classification) → `aaagent-plugin-openai.is_retryable_error` override.
+  The core's default classifier only owns universal signals (network /
+  OS / HTTP status substring sweep / moderation-policy substrings).
+- `DotenvStore` / `ConfigStore` round-trip semantics are still in
+  core, but `/model` (the only caller) moved into the shell plugin.
+
+**New protocol-level API:**
+- `Provider.is_retryable_error(self, exc)` — base implementation
+  lives in the core; plugin authors override to plug in their SDK's
+  named exceptions without forcing the core to know those class names.
+- `Application.commands` (read-only) and `register_slash_command(...)`
+  helpers — the public surface plugins use to contribute slash
+  commands without poking at private attributes.
+- New entry-point group `aaagent.commands` — `aaagent-plugin-shell`
+  is the canonical registrar; third-party plugins can ship their own.
+
+**Semantics:**
+- `Application(providers={})` is now treated as "skip `_setup_providers`,
+  use exactly these" (matching the way `providers={"fake": ...}` was
+  already interpreted). `providers=None` keeps the previous behaviour
+  of falling back to `config.yaml`.
+
+**Test updates:**
+- `tests/test_commands.py` now registers the plugin-owned commands via
+  `aaagent_plugin_shell.register(app)` to mirror runtime wiring.
+- `tests/test_plugin.py` no longer exercises the deleted `BUILTIN_*`
+  class attribute; it tests the same config-driven override path
+  through the modern `plugins:` block.
+
 ## 0.4.4 - Unreleased
 
 ### SQLite session mirror + cross-session history tools

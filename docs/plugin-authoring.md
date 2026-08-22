@@ -4,7 +4,7 @@ This guide explains how to write a plugin for `aaagent`.
 
 ## Plugin types
 
-There are five plugin types, each registered under a specific entry-point group:
+There are six plugin types, each registered under a specific entry-point group:
 
 | Type | Group | Purpose |
 |---|---|---|
@@ -13,6 +13,12 @@ There are five plugin types, each registered under a specific entry-point group:
 | `IMAdapter` | `aaagent.adapters` | IM channel |
 | `SessionStoreFactory` | `aaagent.sessions` | Per-session history store |
 | `MemoryStoreFactory` | `aaagent.memories` | Long-term memory store |
+| Command registrar (function) | `aaagent.commands` | Slash-command bundle |
+
+The core has **no built-in registry of plugin classes** — it discovers
+everything via `importlib.metadata.entry_points` and (optionally) the
+explicit `plugins:` block in `config.yaml`. To ship a feature by
+default, install a plugin package; to remove a feature, uninstall it.
 
 ## Naming convention
 
@@ -67,6 +73,7 @@ class Provider(ABC):
     @abstractmethod
     async def chat(self, messages, tools=None, **kwargs) -> ChatResponse: ...
     async def stream_chat(self, messages, **kwargs) -> AsyncIterator[str]: ...
+    def is_retryable_error(self, exc: BaseException) -> bool: ...
 
 class ToolPlugin(ABC):
     name: str
@@ -141,6 +148,45 @@ class McpToolsPlugin(ToolPlugin):
         ...
 ```
 
+### Tool plugins that need framework state (memory / bus / project_root)
+
+Override the `set_context(ctx)` hook. The framework hands each tool
+plugin a single, immutable `PluginContext` handle once, before
+`register()`. Plugins read what they declared they need from it and
+must not reach back into the `Application` object.
+
+```python
+from aaagent.core.plugin import PluginContext, ToolPlugin
+
+class MemoryToolsPlugin(ToolPlugin):
+    name = "memory"
+
+    def __init__(self) -> None:
+        self._memory_store = None
+
+    def set_context(self, ctx: PluginContext) -> None:
+        # Replace the legacy `set_memory` / `set_application` probes.
+        # Plugins should only read fields they care about.
+        self._memory_store = ctx.memory_store
+
+    def register(self, registry, config):
+        # ... use self._memory_store in your handlers
+```
+
+`PluginContext` fields:
+
+| Field | Description |
+|---|---|
+| `event_bus` | the framework's `EventBus` (slash_reply, tool_result, ...) |
+| `session_store` | the configured `SessionStore` |
+| `memory_store` | the configured `MemoryStore` (may be `None` if no plugin installed) |
+| `project_root` | absolute `Path` to the directory containing `config.yaml` |
+| `config` | the parsed `config.yaml` dict (read-only contract) |
+
+Adding a new plugin-visible capability means adding a field to
+`PluginContext`. Plugins that need more (e.g. an LLM router, a config
+writer) should propose the field rather than poking private attributes.
+
 ## Example: a Provider plugin
 
 ```python
@@ -154,12 +200,87 @@ class MyProvider(Provider):
     async def chat(self, messages, tools=None, **kwargs):
         # call your backend
         return ChatResponse(content="...")
+
+    def is_retryable_error(self, exc):
+        # Return True to let Application._chat_with_fallback try the next
+        # provider in the chain; False aborts the chain immediately. The
+        # base implementation in aaagent.core.plugin.Provider covers
+        # network / OS-level errors plus a conservative HTTP substring
+        # sweep; override here for SDK-specific named exceptions.
+        if isinstance(exc, MySdkThrottle):
+            return True
+        return super().is_retryable_error(exc)
 ```
 
 ```toml
+# pyproject.toml
 [project.entry-points."aaagent.providers"]
 my_provider = "aaagent_plugin_myname:MyProvider"
 ```
+
+## Example: an AgentLoop plugin
+
+The per-request "agent thinks" loop is itself pluggable. The core
+ships `DefaultAgentLoop` (tool iteration + provider fallback). To
+ship an alternative loop (plan-and-execute, tree-of-thought, agent-as-
+tool, ...) subclass `AgentLoop`:
+
+```python
+from aaagent.core.agent_loop import AgentContext, AgentLoop
+
+class TreeOfThoughtLoop(AgentLoop):
+    async def handle_message(self, message, context: AgentContext) -> str:
+        # `context` carries everything you need:
+        #   context.messages, context.tools, context.profile,
+        #   context.session_id, context.platform, context.chat_id
+        # `self._app` (set by Application.__init__) gives you access to
+        # the live provider chain via _provider_order /
+        # _chat_with_fallback / _stream_or_chat if you want to delegate.
+        ...
+```
+
+Install it on the application:
+
+```python
+from aaagent import Application
+from my_plugin import TreeOfThoughtLoop
+
+app = Application(agent_loop=TreeOfThoughtLoop(app_or_factory=...))
+```
+
+The loop never replaces the bus events the rest of the application
+relies on (`message_to_send`, `tool_start`, `tool_result`, ...). It
+just decides how the assistant reply is produced.
+
+## Example: a Slash-command plugin
+
+Slash commands live in plugins too. The `aaagent.commands` entry-point
+group expects a callable `(app: Application) -> None` that registers
+one or more commands on `app.commands`:
+
+```python
+from aaagent.core.commands import SlashContext, SlashResult
+
+async def _session_handler(arg: str, ctx: SlashContext) -> SlashResult:
+    return SlashResult(reply=f"new session for {ctx.platform}")
+
+def register(app):
+    app.commands.register(
+        "/newsession",
+        description="Start a new session",
+        handler=_session_handler,
+        source="my-plugin-name",
+    )
+```
+
+```toml
+[project.entry-points."aaagent.commands"]
+my_commands = "aaagent_plugin_mycommands:register"
+```
+
+`Application.__init__` calls each registered registrar after the core's
+own `register_builtins()`. The `/help` output attributes each command to
+its `source`.
 
 ## config.yaml integration
 
@@ -178,9 +299,10 @@ providers:
 
 When `Application.__init__` runs, `PluginManager.load()` performs:
 
-1. **Builtin registry**: in-tree classes registered in `aaagent.core._builtin_wrappers`.
-2. **Python entry points**: every installed package that declares an entry point under one of the five groups.
-3. **Config overrides**: explicit declarations under `plugins:` in `config.yaml`:
+1. **Python entry points**: every installed package that declares an
+   entry point under one of the six groups.
+2. **Config overrides**: explicit declarations under `plugins:` in
+   `config.yaml`:
    ```yaml
    plugins:
      - kind: provider
@@ -203,13 +325,14 @@ No provider plugin for type 'my_provider'. Install one with
 - `ToolPlugin`: has `register` (callable).
 - `IMAdapter`: has `start`, `stop`, `send` (callable).
 - Session/Memory factories: has `create` (callable).
+- Command registrars: are callable (any callable is accepted).
 
 Failures raise `PluginValidationError` at startup.
 
 ## Local development workflow
 
-The `aaagent` repository is a uv workspace that bundles all 8 in-tree
-plugins under `plugins/`. To make local plugin changes effective, run:
+The `aaagent` repository is a uv workspace that bundles every in-tree
+plugin under `plugins/`. To make local plugin changes effective, run:
 
 ```bash
 uv sync --all-packages

@@ -18,13 +18,93 @@ from __future__ import annotations
 import abc
 import importlib
 import logging
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 if TYPE_CHECKING:
     from aaagent.core.bus import EventBus
     from aaagent.core.memory import MemoryStore
-    from aaagent.core.message import Message
     from aaagent.core.session import SessionStore
+
+
+@dataclass
+class PluginContext:
+    """Controlled view into the live Application a plugin needs at registration.
+
+    Plugins must not hold a reference to the `Application` object itself —
+    they receive this immutable handle once, at registration time, and read
+    what they need from it. Adding a field here is the only way to widen
+    the plugin-visible API; the core owns this contract.
+
+    Fields:
+        event_bus:      the framework's EventBus (slack_reply, tool_result, ...)
+        session_store:  the configured SessionStore
+        memory_store:   the configured MemoryStore (may be None if no plugin
+                        installed)
+        project_root:   absolute Path to the directory containing config.yaml
+        config:         the parsed config.yaml dict (read-only contract — plugins
+                        should not mutate it; use SlashCommandRegistry /
+                        ConfigStore for changes)
+    """
+
+    event_bus: "EventBus"
+    session_store: "SessionStore"
+    memory_store: "MemoryStore | None"
+    project_root: Path
+    config: dict[str, Any]
+
+
+_DEFAULT_RETRYABLE_MARKERS = (
+    "429",
+    " 500",
+    " 502",
+    " 503",
+    " 504",
+    "rate limit",
+    "rate_limit",
+    "overloaded",
+    "overloaded_error",
+    "temporarily unavailable",
+    "try again later",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "broken pipe",
+    "timed out",
+    "timeout error",
+    "server disconnected",
+    # Moderation / policy blocks are deterministic on a single provider but
+    # different providers enforce different policies — falling through the
+    # fallback chain is usually the right move (e.g. MiniMax "new_sensitive"
+    # is more aggressive than DeepSeek / 9router). These substrings are
+    # signal-specific, not vendor-specific, so the universal default
+    # classifier owns them.
+    "sensitive",
+    "unprocessable_entity",
+    "content_filter",
+    "content_policy_violation",
+    "policy_violation",
+)
+
+
+def _default_is_retryable(exc: BaseException) -> bool:
+    """Conservative default classifier — used by Provider.is_retryable_error.
+
+    Only covers universal transient signals (network, timeout, OS-level) plus
+    a substring sweep over the universal HTTP / rate-limit vocabulary. Provider
+    plugins that need to recognise their SDK's named exception classes
+    override `is_retryable_error()` and may combine this default via
+    `super().is_retryable_error(exc) or <vendor-specific check>`.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in _DEFAULT_RETRYABLE_MARKERS)
+
+
+if TYPE_CHECKING:
+    from aaagent.core.message import Message
     from aaagent.core.types import ChatResponse
     from aaagent.core.tool_registry import ToolRegistry
 
@@ -35,6 +115,7 @@ TOOL_GROUP = "aaagent.tools"
 ADAPTER_GROUP = "aaagent.adapters"
 SESSION_GROUP = "aaagent.sessions"
 MEMORY_GROUP = "aaagent.memories"
+COMMAND_GROUP = "aaagent.commands"
 
 
 class PluginNotFoundError(LookupError):
@@ -57,6 +138,12 @@ class Provider(abc.ABC):
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
+        # The framework writes the config-block name (e.g. the YAML key
+        # under `providers:`) into `config["_name"]` before
+        # instantiating, so any subclass that relies on `self.name`
+        # works without needing its own `__init__` plumbing. Plugins
+        # that want to override `name` later can still do so.
+        self.name: str = str(config.get("_name", "") or "")
 
     @abc.abstractmethod
     async def chat(
@@ -77,6 +164,24 @@ class Provider(abc.ABC):
         )
         yield ""  # pragma: no cover
 
+    def is_retryable_error(self, exc: BaseException) -> bool:
+        """Best-effort classification of transient provider errors.
+
+        Returning True tells `Application._chat_with_fallback` / `_stream_or_chat`
+        to try the next provider in the chain. Returning False aborts the
+        fallback and surfaces the error immediately (typically a non-transient
+        condition: bad request, auth failure, content-policy violation that
+        the operator wants to see).
+
+        The base implementation covers the universal case (network / timeout /
+        OS-level) and a conservative string-marker sweep that catches common
+        transient substrings (HTTP 429/5xx, "rate limit", "timeout", ...).
+        Provider plugins that talk to vendor-specific SDKs (OpenAI,
+        Anthropic, MiniMax, ...) override this to plug in their SDK's named
+        exception classes without forcing the core to know those class names.
+        """
+        return _default_is_retryable(exc)
+
 
 class ToolPlugin(abc.ABC):
     """A plugin that registers one or more tools with the ToolRegistry."""
@@ -90,6 +195,20 @@ class ToolPlugin(abc.ABC):
         config: dict[str, Any],
     ) -> None:
         ...
+
+    def set_context(self, ctx: PluginContext) -> None:
+        """Receive the framework-level handle the plugin can read from.
+
+        Called once by `Application._setup_tool_registry` after the
+        plugin is instantiated and before `register()`. The base
+        implementation is a no-op; override to capture fields like
+        `ctx.memory_store` / `ctx.event_bus` / `ctx.project_root`.
+
+        This single, explicit hook replaces the old `set_memory` /
+        `set_application` ad-hoc probes. Adding a new plugin-visible
+        capability means adding a field to `PluginContext`.
+        """
+        return None
 
     async def establish(
         self,
@@ -155,23 +274,21 @@ class MemoryStoreFactory(abc.ABC):
 
 
 class PluginManager:
-    """Discovers and validates plugins from entry_points + builtin registry + config.
+    """Discovers and validates plugins from entry_points + config.
 
     Discovery layers (later overrides earlier):
-        1. builtin registry (BUILTIN_* class dicts)
-        2. Python entry points (`importlib.metadata.entry_points(group=...)`)
-        3. config.yaml explicit `plugins:` declarations
+        1. Python entry points (`importlib.metadata.entry_points(group=...)`)
+        2. config.yaml explicit `plugins:` declarations
 
     After all loading, `_validate_all()` checks each registered class has
     the required attributes and methods, raising `PluginValidationError`
     on the first failure.
-    """
 
-    BUILTIN_PROVIDERS: dict[str, str] = {}
-    BUILTIN_TOOLS: dict[str, str] = {}
-    BUILTIN_ADAPTERS: dict[str, str] = {}
-    BUILTIN_SESSIONS: dict[str, str] = {}
-    BUILTIN_MEMORIES: dict[str, str] = {}
+    The core no longer carries a built-in registry of plugin classes. The
+    `pip install aaagent[default]` extra (see `pyproject.toml`) is what pulls
+    in the plugins used by the example config; everything else must be installed
+    explicitly. This keeps the core's knowledge of plugin classes to zero.
+    """
 
     def __init__(self, config: dict[str, Any]) -> None:
         self._config = config
@@ -180,24 +297,12 @@ class PluginManager:
         self._adapter_classes: dict[str, type[IMAdapter]] = {}
         self._session_factories: dict[str, SessionStoreFactory] = {}
         self._memory_factories: dict[str, MemoryStoreFactory] = {}
+        self._command_registrars: dict[str, Callable[[Any], None]] = {}
 
     def load(self) -> None:
-        self._load_builtin()
         self._load_entry_points()
         self._load_config_explicit()
         self._validate_all()
-
-    def _load_builtin(self) -> None:
-        for type_name, dotted in self.BUILTIN_PROVIDERS.items():
-            self._register_class(PROVIDER_GROUP, type_name, dotted)
-        for name, dotted in self.BUILTIN_TOOLS.items():
-            self._register_class(TOOL_GROUP, name, dotted)
-        for name, dotted in self.BUILTIN_ADAPTERS.items():
-            self._register_class(ADAPTER_GROUP, name, dotted)
-        for name, dotted in self.BUILTIN_SESSIONS.items():
-            self._register_class(SESSION_GROUP, name, dotted)
-        for name, dotted in self.BUILTIN_MEMORIES.items():
-            self._register_class(MEMORY_GROUP, name, dotted)
 
     def _load_entry_points(self) -> None:
         import importlib.metadata as md
@@ -208,6 +313,7 @@ class PluginManager:
             ADAPTER_GROUP,
             SESSION_GROUP,
             MEMORY_GROUP,
+            COMMAND_GROUP,
         )
         for group in groups:
             try:
@@ -263,6 +369,8 @@ class PluginManager:
             self._session_factories[name] = cls() if isinstance(cls, type) else cls
         elif group == MEMORY_GROUP:
             self._memory_factories[name] = cls() if isinstance(cls, type) else cls
+        elif group == COMMAND_GROUP:
+            self._command_registrars[name] = cls  # type: ignore[assignment]
 
     def _validate_all(self) -> None:
         for type_name, cls in self._provider_classes.items():
@@ -331,6 +439,17 @@ class PluginManager:
                 f"Install one with `pip install aaagent-plugin-markdownstore`."
             )
         return factory
+
+    def get_command_registrars(self) -> dict[str, Callable[[Any], None]]:
+        """Return the loaded slash-command registrars keyed by entry-point name.
+
+        Each value is a callable that takes the live `Application` instance
+        and registers one or more slash commands on its `commands` registry.
+        Plugins that ship slash commands expose a function in the
+        `aaagent.commands` entry-point group; the core calls them at
+        startup, after `register_builtins`.
+        """
+        return dict(self._command_registrars)
 
     @property
     def loaded(self) -> dict[str, list[str]]:

@@ -20,6 +20,7 @@ members = [
     "aaagent-plugin-memorytools",
     "aaagent-plugin-openai",
     "aaagent-plugin-scheduler",
+    "aaagent-plugin-shell",
     "aaagent-plugin-shelltools",
     "aaagent-plugin-skills",
     "aaagent-plugin-sqlitesession",
@@ -39,6 +40,21 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+default = [
+    { name = "aaagent-plugin-cliadapter" },
+    { name = "aaagent-plugin-filetools" },
+    { name = "aaagent-plugin-inmemorysession" },
+    { name = "aaagent-plugin-markdownstore" },
+    { name = "aaagent-plugin-memorytools" },
+    { name = "aaagent-plugin-openai" },
+    { name = "aaagent-plugin-shell" },
+    { name = "aaagent-plugin-shelltools" },
+]
+shell = [
+    { name = "aaagent-plugin-shell" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "fastmcp" },
@@ -48,12 +64,22 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aaagent-plugin-cliadapter", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-cliadapter" },
+    { name = "aaagent-plugin-filetools", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-filetools" },
+    { name = "aaagent-plugin-inmemorysession", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-inmemorysession" },
+    { name = "aaagent-plugin-markdownstore", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-markdownstore" },
+    { name = "aaagent-plugin-memorytools", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-memorytools" },
+    { name = "aaagent-plugin-openai", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-openai" },
+    { name = "aaagent-plugin-shell", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-shell" },
+    { name = "aaagent-plugin-shell", marker = "extra == 'shell'", editable = "plugins/aaagent-plugin-shell" },
+    { name = "aaagent-plugin-shelltools", marker = "extra == 'default'", editable = "plugins/aaagent-plugin-shelltools" },
     { name = "aiofiles", specifier = ">=23.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "typer", specifier = ">=0.12" },
 ]
+provides-extras = ["default", "shell"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -186,6 +212,17 @@ requires-dist = [
     { name = "aaagent", editable = "." },
     { name = "croniter", specifier = ">=2.0" },
 ]
+
+[[package]]
+name = "aaagent-plugin-shell"
+version = "0.1.0"
+source = { editable = "plugins/aaagent-plugin-shell" }
+dependencies = [
+    { name = "aaagent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "aaagent", editable = "." }]
 
 [[package]]
 name = "aaagent-plugin-shelltools"

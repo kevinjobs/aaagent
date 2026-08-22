@@ -40,3 +40,18 @@ def test_model_default():
 def test_base_url_none_when_empty():
     p = OpenAICompatibleProvider({"api_key": "k", "base_url": ""})
     assert p._base_url is None
+
+
+def test_name_is_pulled_from_config_underscore_name():
+    """Regression: the framework passes `config["_name"]` so the provider
+    exposes a stable `name` attribute for the agent loop / rate limit /
+    log records. Without this, `_acquire_provider_bucket` and
+    `_chat_with_fallback` blow up with AttributeError at runtime.
+    """
+    p = OpenAICompatibleProvider({"api_key": "k", "_name": "primary"})
+    assert p.name == "primary"
+
+    # Plain callers (tests, ad-hoc scripts) that don't supply `_name`
+    # get an empty string rather than AttributeError.
+    p2 = OpenAICompatibleProvider({"api_key": "k"})
+    assert p2.name == ""

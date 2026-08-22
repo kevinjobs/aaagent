@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
+
+from aaagent.core.plugin import Provider
 
 
 @dataclass
@@ -18,29 +19,30 @@ class ChatResponse:
     tool_calls: list[ToolCall] | None = None
 
 
-class LLMProvider(ABC):
-    """Legacy LLM provider ABC retained for backward compatibility.
+class LLMProvider(Provider):
+    """Backward-compatible alias for ``Provider``.
 
-    New plugins should subclass ``aaagent.core.plugin.Provider`` instead.
-    This class is still used by ``Application`` for the internal provider
-    shim and by tests via ``FakeProvider``.
+    The core accepts both shapes via duck typing; the legacy
+    ``LLMProvider`` class is preserved so existing tests and ``FakeProvider``
+    subclasses keep working without changes. New plugins should subclass
+    ``aaagent.core.plugin.Provider`` (or this class) directly.
     """
 
     name: str = ""
 
     def __init__(self, name: str, config: dict[str, Any]) -> None:
+        super().__init__(config)
         self.name = name
-        self.config = config
 
-    @abstractmethod
-    async def chat(
+    async def chat(  # type: ignore[override]
         self,
         messages: list[dict[str, str]],
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
-    ) -> ChatResponse: ...
+    ) -> ChatResponse:
+        raise NotImplementedError
 
-    async def stream_chat(
+    async def stream_chat(  # type: ignore[override]
         self,
         messages: list[dict[str, str]],
         **kwargs: Any,
@@ -51,11 +53,11 @@ class LLMProvider(ABC):
         yield ""  # pragma: no cover
 
 
-PROVIDER_TYPE_REGISTRY: dict[str, type[LLMProvider]] = {}
+PROVIDER_TYPE_REGISTRY: dict[str, type[Provider]] = {}
 
 
 def register_provider_type(provider_type: str) -> type:
-    def decorator(cls: type[LLMProvider]) -> type[LLMProvider]:
+    def decorator(cls: type[Provider]) -> type[Provider]:
         PROVIDER_TYPE_REGISTRY[provider_type] = cls
         return cls
     return decorator

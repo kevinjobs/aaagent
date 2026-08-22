@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+# Ensure the plugin source is importable in the test env (the workspace
+# installs it via uv sync, but the test runner here uses the source tree).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins/aaagent-plugin-shell/src"))
 
 from aaagent.core.commands import (
     SlashCommandRegistry,
     SlashContext,
     SlashResult,
-    _parse_flags,
     register_builtins,
 )
+
+# `aaagent-plugin-shell` owns /model /compact /session /sessions. The core
+# exposes only /help and /quit; importing the plugin and calling its
+# `register` registrar mirrors what `Application.__init__` does at runtime.
+from aaagent_plugin_shell import register as register_shell_commands, _parse_flags
 
 
 def _ctx(reg: SlashCommandRegistry | None = None, platform: str = "cli", session_id: str = "cli-default") -> SlashContext:
@@ -18,6 +28,16 @@ def _ctx(reg: SlashCommandRegistry | None = None, platform: str = "cli", session
     return SlashContext(
         platform=platform, session_id=session_id, chat_id=session_id, app=app
     )
+
+
+def _register_all(reg: SlashCommandRegistry) -> None:
+    """Mirror what `Application.__init__` does at runtime: register the
+    core's protocol-level commands plus everything the shell plugin ships.
+    """
+    register_builtins(reg)
+    # The plugin's registrar expects an `app` with a `commands` attribute.
+    app = SimpleNamespace(commands=reg)
+    register_shell_commands(app)
 
 
 def test_register_rejects_invalid_name():
@@ -35,7 +55,7 @@ def test_register_rejects_invalid_name():
 @pytest.mark.asyncio
 async def test_handle_ignores_non_slash():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("hello world", _ctx())
     assert result.matched is False
     assert result.reply is None
@@ -44,7 +64,7 @@ async def test_handle_ignores_non_slash():
 @pytest.mark.asyncio
 async def test_handle_unknown_command():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/nope arg", _ctx())
     assert result.matched is False
 
@@ -52,7 +72,7 @@ async def test_handle_unknown_command():
 @pytest.mark.asyncio
 async def test_help_lists_builtins():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/help", _ctx(reg=reg))
     assert result.matched is True
     assert "/help" in (result.reply or "")
@@ -68,7 +88,7 @@ async def test_help_lists_builtins():
 @pytest.mark.asyncio
 async def test_quit_signals_stop_adapter():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/quit", _ctx())
     assert result.matched is True
     assert result.stop_adapter is True
@@ -78,7 +98,7 @@ async def test_quit_signals_stop_adapter():
 @pytest.mark.asyncio
 async def test_exit_no_longer_registered():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/exit", _ctx())
     assert result.matched is False
 
@@ -86,7 +106,7 @@ async def test_exit_no_longer_registered():
 @pytest.mark.asyncio
 async def test_session_no_arg_starts_new_session():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/session", _ctx())
     assert result.matched is True
     assert result.switch_session is not None
@@ -97,7 +117,7 @@ async def test_session_no_arg_starts_new_session():
 @pytest.mark.asyncio
 async def test_session_with_arg_switches():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/session bar", _ctx())
     assert result.matched is True
     assert result.switch_session == "cli-bar"
@@ -107,7 +127,7 @@ async def test_session_with_arg_switches():
 @pytest.mark.asyncio
 async def test_session_strips_already_prefixed_arg():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/session cli-bar", _ctx())
     assert result.switch_session == "cli-bar"
 
@@ -115,7 +135,7 @@ async def test_session_strips_already_prefixed_arg():
 @pytest.mark.asyncio
 async def test_session_same_id_noops():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/session cli-default", _ctx(session_id="cli-default"))
     assert result.matched is True
     assert result.switch_session is None
@@ -135,7 +155,7 @@ async def test_sessions_lists_with_current_marker():
     ctx = SlashContext(platform="cli", session_id="cli-default", chat_id="x", app=app)
 
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/sessions", ctx)
     assert result.matched is True
     assert "Sessions:" in (result.reply or "")
@@ -150,7 +170,7 @@ async def test_sessions_no_store_graceful():
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
 
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/sessions", ctx)
     assert result.matched is True
     assert "unavailable" in (result.reply or "")
@@ -168,7 +188,7 @@ async def test_sessions_includes_current_when_store_empty():
     )
 
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/sessions", ctx)
     assert result.matched is True
     assert "No sessions yet" not in (result.reply or "")
@@ -191,7 +211,7 @@ async def test_sessions_includes_current_when_store_has_others_but_not_current()
     )
 
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/sessions", ctx)
     assert "* cli-default" in (result.reply or "")
     assert " cli-foo" in (result.reply or "")
@@ -200,7 +220,7 @@ async def test_sessions_includes_current_when_store_has_others_but_not_current()
 @pytest.mark.asyncio
 async def test_blacklisted_command_returns_unsupported_reply():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     ctx = SlashContext(platform="feishu", session_id="feishu-x", chat_id="x")
     result = await reg.handle("/quit", ctx, blacklist={"/quit"})
     assert result.matched is True
@@ -242,7 +262,7 @@ async def test_handler_exception_is_caught():
 @pytest.mark.asyncio
 async def test_custom_command_registration():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
 
     async def echo(arg, ctx):
         return SlashResult(reply=f"echo: {arg}")
@@ -256,13 +276,13 @@ async def test_custom_command_registration():
 @pytest.mark.asyncio
 async def test_list_commands_sorted_by_name():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
 
     async def h(*a, **k):
         return SlashResult()
 
     reg.register("/aaa", description="first", handler=h)
-    names = [n for n, _ in reg.list_commands()]
+    names = [n for n, _, _ in reg.list_commands()]
     assert names == sorted(names)
     assert "/aaa" in names
     assert "/help" in names
@@ -271,7 +291,7 @@ async def test_list_commands_sorted_by_name():
 @pytest.mark.asyncio
 async def test_case_insensitive_command_lookup():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/QUIT", _ctx())
     assert result.matched is True
     assert result.stop_adapter is True
@@ -303,7 +323,7 @@ class _FakeMessage:
 @pytest.mark.asyncio
 async def test_compact_no_session_store():
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     app = SimpleNamespace(_session_store=None, _provider=_FakeProvider())
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     result = await reg.handle("/compact", ctx)
@@ -316,7 +336,7 @@ async def test_compact_no_provider():
     app = SimpleNamespace(_session_store=fake_store, _provider=None)
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/compact", ctx)
     assert "no active provider" in (result.reply or "")
 
@@ -336,7 +356,7 @@ async def test_compact_too_few_messages():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/compact", ctx)
     assert "Nothing to compact" in (result.reply or "")
     assert "1 message" in (result.reply or "")
@@ -365,7 +385,7 @@ async def test_compact_succeeds_and_reports_savings():
     )
     ctx = SlashContext(platform="cli", session_id="cli-test", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/compact", ctx)
     assert "Compacted" in (result.reply or "")
     assert "4" in (result.reply or "")
@@ -382,7 +402,7 @@ async def test_models_no_providers():
     app = SimpleNamespace(_providers={}, _provider=None, _config={})
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/models", ctx)
     assert "No providers" in (result.reply or "")
 
@@ -404,7 +424,7 @@ async def test_models_lists_with_default_and_current():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/models", ctx)
     assert "* minmax (default)" in (result.reply or "")
     assert " deepseek" in (result.reply or "")
@@ -512,7 +532,7 @@ async def test_model_no_args_reports_current():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/model", ctx)
     assert "Current:" in (result.reply or "")
     assert "minmax" in (result.reply or "")
@@ -527,7 +547,7 @@ async def test_model_switch_existing():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle(
         "/model --provider minmax --model M-2", ctx
     )
@@ -542,7 +562,7 @@ async def test_model_unknown_provider_without_new_errors():
     app = _FakeApp(providers_cfg={"minmax": {"model": "M3"}})
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle("/model --provider ghost --model gpt-x", ctx)
     assert "not configured" in (result.reply or "")
     assert "ghost" in (result.reply or "")  # example usage mentions it
@@ -554,7 +574,7 @@ async def test_model_new_requires_key_and_base_url():
     app = _FakeApp(providers_cfg={"minmax": {"model": "M3"}})
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle(
         "/model --provider foo --model bar -new", ctx
     )
@@ -572,7 +592,7 @@ async def test_model_new_creates_provider_and_persists():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle(
         "/model --provider foo --model bar -new "
         "--key sk-xyz --base-url https://api.foo.com/v1",
@@ -603,7 +623,7 @@ async def test_model_new_sets_default_when_flagged():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle(
         "/model --provider foo --model bar -new -default "
         "--key sk-xyz --base-url https://api.foo.com/v1",
@@ -628,7 +648,7 @@ async def test_model_default_flag_updates_default_provider():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle(
         "/model --provider deepseek --model coder -default", ctx
     )
@@ -648,7 +668,7 @@ async def test_model_persist_failure_reported_but_not_raised():
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
-    register_builtins(reg)
+    _register_all(reg)
     result = await reg.handle(
         "/model --provider minmax --model M-2", ctx
     )

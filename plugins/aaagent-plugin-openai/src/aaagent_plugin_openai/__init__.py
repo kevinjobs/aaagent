@@ -4,12 +4,35 @@ import logging
 import os
 from typing import Any, AsyncIterator
 
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+    InternalServerError,
+    RateLimitError,
+)
 from openai import AsyncOpenAI
 
 from aaagent.core.plugin import Provider
 from aaagent.core.types import ChatResponse, ToolCall
 
 logger = logging.getLogger("aaagent.provider.openai")
+
+
+# Named exception classes from the OpenAI SDK that indicate a transient
+# condition worth retrying against the fallback chain. Kept here (not in
+# core) so the core stays free of vendor SDK knowledge. The base classifier
+# in `aaagent.core.plugin.Provider` already covers OSError / TimeoutError
+# / common HTTP substrings; this list adds the SDK-specific names.
+_OPENAI_RETRYABLE_EXC = (
+    APIConnectionError,
+    APITimeoutError,
+    APIStatusError,
+    AuthenticationError,
+    InternalServerError,
+    RateLimitError,
+)
 
 
 class OpenAICompatibleProvider(Provider):
@@ -39,6 +62,13 @@ class OpenAICompatibleProvider(Provider):
         self._base_url = config.get("base_url") or None
         self._model = config.get("model", "gpt-4o")
         self._client: AsyncOpenAI | None = None
+
+    def is_retryable_error(self, exc: BaseException) -> bool:
+        # Combine base default (network / OS / universal string markers) with
+        # OpenAI-SDK named exception classes that this plugin owns.
+        if isinstance(exc, _OPENAI_RETRYABLE_EXC):
+            return True
+        return super().is_retryable_error(exc)
 
     def _get_client(self) -> AsyncOpenAI:
         if self._client is None:

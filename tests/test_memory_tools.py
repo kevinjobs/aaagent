@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from aaagent.core.plugin import PluginContext
 from aaagent.core.tool_registry import ToolRegistry
 from aaagent_plugin_memorytools import MemoryToolsPlugin
 
@@ -18,7 +21,15 @@ class _FakeStore:
 async def test_recall_forwards_top_k_and_tags():
     store = _FakeStore()
     plugin = MemoryToolsPlugin()
-    plugin.set_memory(store)
+    plugin.set_context(
+        PluginContext(
+            event_bus=None,  # memory plugin doesn't need the bus
+            session_store=None,  # ditto
+            memory_store=store,
+            project_root=Path("/tmp"),
+            config={},
+        )
+    )
     reg = ToolRegistry()
     plugin.register(reg, {"memory": {"enabled": True}})
     recall_reg = reg.get("recall")

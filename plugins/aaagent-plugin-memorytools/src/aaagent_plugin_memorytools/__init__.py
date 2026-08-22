@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aaagent.core.plugin import ToolPlugin
+from aaagent.core.plugin import PluginContext, ToolPlugin
 
 
 def register_memory_tools(registry: Any, memory_store: Any | None = None) -> None:
@@ -83,8 +83,11 @@ class MemoryToolsPlugin(ToolPlugin):
     def __init__(self) -> None:
         self._memory_store: Any = None
 
-    def set_memory(self, store: Any) -> None:
-        self._memory_store = store
+    def set_context(self, ctx: PluginContext) -> None:
+        # Replace the legacy `set_memory` probe; the framework now hands
+        # us a controlled handle and we only read what we declared we
+        # need.
+        self._memory_store = ctx.memory_store
 
     def register(self, registry: Any, config: dict[str, Any]) -> None:
         memory_cfg = config.get("memory", {}) if isinstance(config, dict) else {}

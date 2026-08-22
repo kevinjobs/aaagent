@@ -1,8 +1,9 @@
 # aaagent
 
-A pluggable IM + LLM agent framework. Everything except the core is a
-plugin — providers, tools, IM adapters, session stores, and memory
-stores are all loaded through Python entry points.
+A pluggable IM + LLM agent framework. The core stays minimal — only
+mechanisms live here. Providers, tools, IM adapters, session stores,
+memory stores, and slash-command bundles are all loaded as plugins
+through Python entry points.
 
 ## Architecture
 
@@ -17,16 +18,23 @@ aaagent                 # core (CLI, EventBus, plugin manager, PromptBuilder, ..
     ├── aaagent-plugin-cliadapter/
     ├── aaagent-plugin-feishu/
     ├── aaagent-plugin-inmemorysession/
-    └── aaagent-plugin-markdownstore/
+    ├── aaagent-plugin-markdownstore/
+    ├── aaagent-plugin-shell/   # slash commands: /model /compact /session /sessions
+    └── ...
 ```
 
-The core defines five protocols (`Provider`, `ToolPlugin`, `IMAdapter`,
-`SessionStoreFactory`, `MemoryStoreFactory`) and a `PluginManager` that
+The core defines six protocols (`Provider`, `ToolPlugin`, `IMAdapter`,
+`SessionStoreFactory`, `MemoryStoreFactory`, plus the `aaagent.commands`
+entry-point group for slash-command bundles) and a `PluginManager` that
 discovers implementations via:
 
-1. Builtin registry (in-tree fallback)
-2. Python entry points (`importlib.metadata.entry_points(group=...)`)
-3. Explicit config.yaml overrides (`plugins:` block)
+1. Python entry points (`importlib.metadata.entry_points(group=...)`)
+2. Explicit `config.yaml` overrides (`plugins:` block)
+
+The core has no built-in registry of plugin classes — `pip install
+aaagent[default]` (or `uv sync --all-packages` for the in-tree
+workspace) is what brings the plugins into reach. The core does not
+import any of them by name.
 
 See [docs/plugin-authoring.md](docs/plugin-authoring.md) for the full
 plugin authoring guide.
@@ -39,7 +47,8 @@ The project uses [uv](https://github.com/astral-sh/uv) workspaces.
 uv sync --all-packages
 ```
 
-This installs `aaagent` plus all 8 in-tree plugins. After that:
+This installs `aaagent` plus every in-tree plugin (default + extras).
+After that:
 
 ```bash
 aaagent chat    # CLI chat mode (requires cliadapter + openai + at least one tool)
@@ -53,18 +62,25 @@ uv pip install aaagent
 uv pip install aaagent-plugin-openai     # + any other plugins
 ```
 
-### Minimal chat install
+### Default install (recommended)
+
+`pip install aaagent[default]` pulls in the seven plugins that make
+`aaagent chat` work out of the box:
 
 ```bash
-uv pip install aaagent \
-  aaagent-plugin-openai \
-  aaagent-plugin-filetools \
-  aaagent-plugin-shelltools \
-  aaagent-plugin-memorytools \
-  aaagent-plugin-cliadapter \
-  aaagent-plugin-inmemorysession \
-  aaagent-plugin-markdownstore
+uv pip install 'aaagent[default]'
 ```
+
+Equivalent to installing:
+
+- `aaagent-plugin-openai` (LLM provider)
+- `aaagent-plugin-inmemorysession` (session store)
+- `aaagent-plugin-markdownstore` (memory store)
+- `aaagent-plugin-cliadapter` (CLI REPL adapter)
+- `aaagent-plugin-filetools`, `aaagent-plugin-shelltools`,
+  `aaagent-plugin-memorytools` (tool plugins)
+- `aaagent-plugin-shell` (slash commands: `/model` / `/compact` /
+  `/session` / `/sessions`)
 
 ### Adding Feishu
 
@@ -416,8 +432,23 @@ python -m aaagent chat
 | `/quit` | Exit chat |
 
 Slash commands are handled centrally by `aaagent.core.commands.SlashCommandRegistry`
-so future IM adapters (web, Slack, ...) get the same `/help` / `/session`
-support out of the box. Per-platform blacklists in `config.yaml`
+so future IM adapters (web, Slack, ...) get the same `/help` / `/quit`
+support out of the box. The core only ships the two protocol-level
+commands every adapter needs (`/help`, `/quit`); the chat-time
+`/model`, `/compact`, `/session`, `/sessions` come from
+`aaagent-plugin-shell` (pulled in via `aaagent[default]`). Plugins can
+register additional commands through the `aaagent.commands` entry-point
+group — each entry point is a callable `(app: Application) -> None`
+that registers one or more handlers.
+
+The agent-loop itself is pluggable. `aaagent.core.agent_loop.AgentLoop`
+is the strategy that turns one inbound message into an assistant
+reply; the bundled `DefaultAgentLoop` does the historical
+tool-iteration + provider-fallback dance. Alternative loops (plan-and-
+execute, agent-as-tool, tree-of-thought, ...) install themselves via
+`Application(agent_loop=...)`.
+
+Per-platform blacklists in `config.yaml`
 (`slash_command_blacklist.<platform>`) suppress side effects (e.g.
 `/quit` on Feishu) while still replying a friendly "this platform does
 not support that command" notice.
@@ -519,12 +550,16 @@ logging.
 | `aaagent-plugin-shelltools` | Shell execution | `ShellToolsPlugin` |
 | `aaagent-plugin-memorytools` | remember / recall tools | `MemoryToolsPlugin` |
 | `aaagent-plugin-mcp` | Model Context Protocol server bridge | `McpToolsPlugin` |
+| `aaagent-plugin-shell` | Slash commands: `/model` / `/compact` / `/session` / `/sessions` | `register(app)` |
 | `aaagent-plugin-cliadapter` | CLI REPL adapter | `CliAdapter` |
 | `aaagent-plugin-feishu` | Feishu WebSocket adapter | `FeishuAdapter` |
 | `aaagent-plugin-inmemorysession` | In-memory session store | `InMemorySessionFactory` |
+| `aaagent-plugin-sqlitesession` | SQLite-backed session store + history tools | `SqliteSessionStore`, `_DualWriteSessionStore`, `SqliteSessionToolsPlugin` |
 | `aaagent-plugin-markdownstore` | Markdown memory store | `MarkdownMemoryStoreFactory` |
 | `aaagent-plugin-websearch` | Web search (Tavily backend) | `WebSearchToolsPlugin` |
 | `aaagent-plugin-webscrape` | URL fetch + extract (httpx + trafilatura) | `WebScrapeToolsPlugin` |
+| `aaagent-plugin-skills` | Skills plugin (LLM-authorable file-backed instructions) | `SkillsPlugin` |
+| `aaagent-plugin-scheduler` | Cron-style scheduler tools | `SchedulerToolsPlugin` |
 
 To author a new plugin, see
 [docs/plugin-authoring.md](docs/plugin-authoring.md).
@@ -538,16 +573,23 @@ aaagent/                                  # workspace root
 │   ├── cli.py
 │   └── core/
 │       ├── app.py                          # Application (plugin-driven)
-│       ├── bus.py
+│       ├── bus.py                          # EventBus
+│       ├── commands.py                     # SlashCommandRegistry + core /help /quit
+│       ├── config_io.py                    # ruamel.yaml round-trip ConfigStore
+│       ├── dotenv_io.py                    # comment-preserving DotenvStore
 │       ├── envutil.py                      # ${ENV_VAR} resolver
 │       ├── logctx.py                       # contextvars logging context
 │       ├── memory.py                       # MemoryStore ABC
 │       ├── message.py
+│       ├── paths.py                        # project-root path resolution
 │       ├── plugin.py                       # Provider / ToolPlugin / IMAdapter / factories + PluginManager
+│       ├── policy.py                       # protected-paths + shell path extraction
 │       ├── prompt.py                       # PromptBuilder
 │       ├── ratelimit.py                    # TokenBucket
+│       ├── sanitize.py                     # secret scrubbing
 │       ├── session.py                      # SessionStore ABC
-│       └── _builtin_wrappers.py           # builtin plugin registry (fallback)
+│       ├── tool_registry.py                # ToolRegistry
+│       └── types.py                        # ChatResponse / ToolCall / legacy LLMProvider alias
 ├── plugins/                                # uv workspace of in-tree plugins
 └── docs/plugin-authoring.md
 ```

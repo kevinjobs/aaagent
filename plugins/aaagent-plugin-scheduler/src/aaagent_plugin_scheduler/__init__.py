@@ -30,7 +30,7 @@ from croniter import croniter
 
 from aaagent.core.logctx import current_user_id
 from aaagent.core.message import Message
-from aaagent.core.plugin import ToolPlugin
+from aaagent.core.plugin import PluginContext, ToolPlugin
 from aaagent.core.tool_registry import ToolRegistry
 
 logger = logging.getLogger("aaagent.plugins.scheduler")
@@ -178,16 +178,21 @@ class SchedulerToolsPlugin(ToolPlugin):
     name = "scheduler"
 
     def __init__(self) -> None:
-        self._app: Any = None
+        self._bus: Any = None
+        self._project_root: Path | None = None
         self._store: _SchedulerStore | None = None
         self._tick_seconds: int = _DEFAULT_TICK_S
         self._task: asyncio.Task | None = None
 
-    def set_application(self, app: Any) -> None:
-        """Receives the live Application instance from
-        Application._setup_tool_registry via the set_application hook.
-        Used to grab the EventBus for emitting message_received."""
-        self._app = app
+    def set_context(self, ctx: PluginContext) -> None:
+        """Receive the framework-level handle.
+
+        Replaces the legacy `set_application(app)` hook — the plugin no
+        longer reaches into the Application object, it reads what it
+        declared it needs from the controlled context handle.
+        """
+        self._bus = ctx.event_bus
+        self._project_root = ctx.project_root
 
     def register(self, registry: ToolRegistry, config: dict[str, Any]) -> None:
         cfg = (config.get("tools") or {}).get("scheduler") or {}
@@ -196,11 +201,7 @@ class SchedulerToolsPlugin(ToolPlugin):
         storage_path = cfg.get("storage_path", _DEFAULT_STORAGE)
         from aaagent.core.paths import resolve_project_path
 
-        project_root = (
-            Path(self._app._project_root)
-            if self._app is not None and getattr(self._app, "_project_root", None)
-            else Path.cwd()
-        )
+        project_root = self._project_root or Path.cwd()
         resolved = resolve_project_path(storage_path, project_root)
         self._store = _SchedulerStore(resolved)
         self._tick_seconds = int(cfg.get("tick_seconds", _DEFAULT_TICK_S))
@@ -303,9 +304,9 @@ class SchedulerToolsPlugin(ToolPlugin):
             return True
 
     async def _fire(self, sched: dict[str, Any]) -> None:
-        if self._app is None or self._app._bus is None:
+        if self._bus is None:
             logger.warning(
-                "schedule %s: app or bus not set; cannot fire", sched.get("id")
+                "schedule %s: bus not set; cannot fire", sched.get("id")
             )
             return
         msg = Message(
@@ -317,7 +318,7 @@ class SchedulerToolsPlugin(ToolPlugin):
             role="user",
             raw={"trigger": "scheduler", "schedule_id": sched["id"]},
         )
-        await self._app._bus.emit("message_received", msg)
+        await self._bus.emit("message_received", msg)
         logger.info(
             "schedule %s fired → %s/%s", sched["id"], sched["platform"], sched["chat_id"]
         )

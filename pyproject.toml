@@ -11,6 +11,27 @@ dependencies = [
     "aiofiles>=23.2",
 ]
 
+[project.optional-dependencies]
+# `pip install aaagent[default]` pulls in the seven plugins needed for the
+# common case: `aaagent chat` works out of the box with the bundled example
+# config. The core stays free of any knowledge of which packages fill these
+# slots — they're discovered purely through Python entry points.
+default = [
+    "aaagent-plugin-openai",
+    "aaagent-plugin-inmemorysession",
+    "aaagent-plugin-markdownstore",
+    "aaagent-plugin-cliadapter",
+    "aaagent-plugin-filetools",
+    "aaagent-plugin-shelltools",
+    "aaagent-plugin-memorytools",
+    "aaagent-plugin-shell",
+]
+# Slash-command bundle only — for headless / service deployments that
+# don't need the chat-time `/model` / `/session` / `/compact` commands.
+shell = [
+    "aaagent-plugin-shell",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=7",
@@ -35,6 +56,7 @@ members = [
     "plugins/aaagent-plugin-shelltools",
     "plugins/aaagent-plugin-memorytools",
     "plugins/aaagent-plugin-mcp",
+    "plugins/aaagent-plugin-shell",
     "plugins/aaagent-plugin-skills",
     "plugins/aaagent-plugin-scheduler",
     "plugins/aaagent-plugin-sqlitesession",
@@ -53,6 +75,7 @@ aaagent-plugin-filetools = { workspace = true }
 aaagent-plugin-shelltools = { workspace = true }
 aaagent-plugin-memorytools = { workspace = true }
 aaagent-plugin-mcp = { workspace = true }
+aaagent-plugin-shell = { workspace = true }
 aaagent-plugin-skills = { workspace = true }
 aaagent-plugin-scheduler = { workspace = true }
 aaagent-plugin-sqlitesession = { workspace = true }

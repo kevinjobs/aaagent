@@ -13,6 +13,7 @@ import pytest
 from aaagent.core.bus import EventBus
 from aaagent.core.logctx import set_context
 from aaagent.core.message import Message
+from aaagent.core.plugin import PluginContext
 from aaagent.core.tool_registry import ToolRegistry
 from aaagent_plugin_scheduler import (
     SchedulerToolsPlugin,
@@ -29,7 +30,15 @@ def _reg(store: _SchedulerStore, app: Any = None) -> ToolRegistry:
     plugin = SchedulerToolsPlugin()
     plugin._store = store
     if app is not None:
-        plugin._app = app
+        plugin.set_context(
+            PluginContext(
+                event_bus=app._bus,
+                session_store=None,
+                memory_store=None,
+                project_root=app._project_root,
+                config={},
+            )
+        )
     reg = ToolRegistry()
     plugin.register(reg, cfg)
     return reg
@@ -352,7 +361,15 @@ async def test_tick_fires_due_recurring(tmp_path: Path):
 
     plugin = SchedulerToolsPlugin()
     plugin._store = store
-    plugin._app = app
+    plugin.set_context(
+        PluginContext(
+            event_bus=app._bus,
+            session_store=None,
+            memory_store=None,
+            project_root=app._project_root,
+            config={},
+        )
+    )
     plugin._tick_seconds = 1
 
     # Hand-write a schedule whose next_fire is in the past
@@ -394,7 +411,15 @@ async def test_tick_once_disables_after_fire(tmp_path: Path):
 
     plugin = SchedulerToolsPlugin()
     plugin._store = store
-    plugin._app = app
+    plugin.set_context(
+        PluginContext(
+            event_bus=app._bus,
+            session_store=None,
+            memory_store=None,
+            project_root=app._project_root,
+            config={},
+        )
+    )
 
     past = (_now() - timedelta(seconds=10)).isoformat()
     store.save_all([{
@@ -430,7 +455,15 @@ async def test_tick_skips_future_schedule(tmp_path: Path):
 
     plugin = SchedulerToolsPlugin()
     plugin._store = store
-    plugin._app = app
+    plugin.set_context(
+        PluginContext(
+            event_bus=app._bus,
+            session_store=None,
+            memory_store=None,
+            project_root=app._project_root,
+            config={},
+        )
+    )
 
     future = (_now() + timedelta(hours=1)).isoformat()
     store.save_all([{
@@ -464,7 +497,15 @@ async def test_tick_skips_disabled(tmp_path: Path):
 
     plugin = SchedulerToolsPlugin()
     plugin._store = store
-    plugin._app = app
+    plugin.set_context(
+        PluginContext(
+            event_bus=app._bus,
+            session_store=None,
+            memory_store=None,
+            project_root=app._project_root,
+            config={},
+        )
+    )
 
     past = (_now() - timedelta(seconds=1)).isoformat()
     store.save_all([{
@@ -526,7 +567,15 @@ async def test_plugin_establish_spawns_tick_task(tmp_path: Path):
         }
     }
     plugin = SchedulerToolsPlugin()
-    plugin.set_application(app)
+    plugin.set_context(
+        PluginContext(
+            event_bus=app._bus,
+            session_store=None,
+            memory_store=None,
+            project_root=app._project_root,
+            config={},
+        )
+    )
     reg = ToolRegistry()
     plugin.register(reg, cfg)
 

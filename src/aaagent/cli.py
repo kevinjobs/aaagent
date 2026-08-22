@@ -14,6 +14,8 @@ app = typer.Typer(name="aaagent", help="A pluggable IM + LLM agent framework")
 
 _AUTH_RE = re.compile(r"(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._\-]+")
 
+logger = logging.getLogger("aaagent.cli")
+
 
 class _AuthScrubbingHandler(logging.StreamHandler):
     def format(self, record: logging.LogRecord) -> str:
@@ -77,14 +79,18 @@ def run(config: str = "config.yaml") -> None:
 
 @app.command()
 def chat(config: str = "config.yaml") -> None:
-    """Start CLI chat mode for testing."""
+    """Start CLI chat mode for testing.
+
+    Resolves the CLI adapter through the same PluginManager the rest of the
+    application uses. If `aaagent-plugin-cliadapter` is not installed the
+    command exits with an install hint.
+    """
     _setup_logging(_read_log_level(config), quiet=True)
     application = Application(config_path=config, enabled_adapters=[])
 
-    # Resolve CLI adapter via PluginManager (entry point "aaagent.adapters" -> cli)
-    from aaagent.core.plugin import PluginManager
-
-    cli_cls = PluginManager(application._config)._adapter_classes.get("cli") or _find_cli_adapter()
+    # Reuse the application's already-initialised plugin manager so we don't
+    # have a second, parallel discovery path.
+    cli_cls = application._plugins.get_adapter_class("cli")
     if cli_cls is None:
         logger.error(
             "CLI adapter plugin not installed. Run: pip install aaagent-plugin-cliadapter"
@@ -93,13 +99,3 @@ def chat(config: str = "config.yaml") -> None:
     cli_adapter = cli_cls({}, application._bus)
     application.add_adapter(cli_adapter)
     _run_application(application)
-
-
-def _find_cli_adapter():
-    """Locate CliAdapter class via PluginManager + entry_points."""
-    import importlib.metadata as md
-
-    for ep in md.entry_points(group="aaagent.adapters"):
-        if ep.name == "cli":
-            return ep.load()
-    return None

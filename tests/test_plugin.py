@@ -124,29 +124,20 @@ def test_plugin_manager_get_memory_factory_raises():
         pm.get_memory_factory("nonexistent")
 
 
-def test_plugin_manager_builtin_registration():
-    pm = PluginManager(config={})
-    pm.BUILTIN_PROVIDERS = {"good": "test_plugin:_GoodProvider"}
-    pm.BUILTIN_TOOLS = {"good_tool": "test_plugin:_GoodTool"}
-    pm.load()
-    assert "good" in pm.loaded["providers"]
-    assert "good_tool" in pm.loaded["tools"]
-    cls = pm.get_provider_class("good")
-    assert cls is _GoodProvider
-
-
-def test_plugin_manager_config_explicit_overrides_builtin():
+def test_plugin_manager_config_explicit_overrides_entry_points():
+    """config.yaml's `plugins:` block can ship plugin classes without an
+    installed package — useful for ad-hoc in-process providers.
+    """
     pm = PluginManager(
         config={
             "plugins": [
                 {
                     "kind": "provider",
                     "type": "good",
-                    "class": "test_plugin:_OverrideProvider",
+                    "class": "test_plugin:_GoodProvider",
                 }
             ]
         }
     )
-    pm.BUILTIN_PROVIDERS = {"good": "test_plugin:_GoodProvider"}
     pm.load()
-    assert pm.get_provider_class("good") is _OverrideProvider
+    assert pm.get_provider_class("good") is _GoodProvider

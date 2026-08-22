@@ -338,7 +338,7 @@ async def test_stream_or_chat_falls_back_before_first_chunk(tmp_path):
         memory=memory,
         providers={"primary": primary, "backup": backup},
     )
-    result = await app._stream_or_chat([{"role": "user", "content": "hi"}])
+    result = await app._agent_loop._stream_or_chat([{"role": "user", "content": "hi"}])
     assert result == "ok-backup"
 
 
@@ -446,3 +446,47 @@ async def test_application_stop_closes_session_store(tmp_path):
     )
     await app.stop()
     assert secondary._conn is None
+
+
+@pytest.mark.asyncio
+async def test_handle_message_returns_public_error_when_provider_chat_explodes(tmp_path):
+    """Regression: the default agent loop must never AttributeError on
+    `self._PUBLIC_ERROR` if the inner `_chat_with_fallback` raises.
+    """
+    from aaagent.core.agent_loop import AgentContext, DefaultAgentLoop
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("providers: {}\n", encoding="utf-8")
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    class _Boom(LLMProvider):
+        async def chat(self, messages, tools=None, **kwargs):
+            raise RuntimeError("boom")
+
+    app = Application(
+        config_path=str(cfg),
+        bus=EventBus(),
+        memory=memory,
+        providers={"primary": _Boom("primary", {})},
+    )
+    app._provider_order = [app._providers["primary"]]
+
+    msg = Message(
+        session_id="s",
+        platform="cli",
+        chat_id="c",
+        user_id="u",
+        content="hello",
+        role="user",
+    )
+    context = AgentContext(
+        session_id="s",
+        platform="cli",
+        chat_id="c",
+        messages=msg.to_llm_dict(),
+        tools=[],
+        system_prompt="",
+    )
+    loop = DefaultAgentLoop(app)
+    out = await loop.handle_message(msg, context)
+    assert "服务暂时不可用" in out
