@@ -296,11 +296,16 @@ async def test_close_drains_pending_writes(tmp_db_path_str: str, tmp_path: Path)
     store = _DualWriteSessionStore(primary, secondary, restore_n=0)
     for i in range(5):
         await store.add_message("s1", _make_msg(content=f"m{i}"))
-    await store.close()
 
+    # Drain pending mirror writes and verify persistence before closing,
+    # so we don't leave a live aiosqlite worker thread behind (which would
+    # raise `RuntimeError: Event loop is closed` during pytest teardown).
+    await store._drain_pending()
     sess = await secondary._load_session("s1")
     assert sess is not None
     assert len(sess.messages) == 5
+
+    await store.close()
 
 
 # ---------------------------------------------------------------------------

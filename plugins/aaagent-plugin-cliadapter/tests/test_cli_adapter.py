@@ -43,6 +43,7 @@ async def test_cli_slash_reply_renders_with_bold_green():
         file=captured,
         force_terminal=True,
         color_system="truecolor",
+        no_color=False,  # ensure color is emitted even if $NO_COLOR is set
         width=200,
     )
 

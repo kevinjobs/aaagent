@@ -152,7 +152,7 @@ class CliAdapter(IMAdapter):
             return
         reply = payload.get("reply")
         if reply:
-            self._console.print(f"[bold green]{reply}[/]")
+            self._console.print(f"[bold green]{reply}[/bold green]")
 
     async def _on_slash_quit(self, payload: dict[str, Any]) -> None:
         if payload.get("platform") != "cli":
