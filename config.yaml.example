@@ -1,0 +1,103 @@
+# aaagent template configuration.
+#
+# Copy this file to `config.yaml` (or just run aaagent — it auto-copies
+# this example into `config.yaml` on first start):
+#
+#   cp config.yaml.example config.yaml
+#
+# `config.yaml` is gitignored: it holds YOUR machine-specific absolute
+# paths and settings. `config.yaml.example` is the version-controlled
+# public template — never put local paths or secrets here.
+#
+# API keys are read from `.env` (see `.env.example`); config.yaml only
+# ever references them as ${ENV_NAME} placeholders. Secrets must not be
+# written here — `/model` stores them in `.env` for you.
+
+providers:
+  _meta:
+    default: 9router
+    fallback:
+      - 9router
+      - cntoken
+  9router:
+    type: openai_compatible
+    enabled: true
+    api_key: ${9ROUTER_API_KEY}
+    base_url: http://localhost:20128/v1
+    model: combo
+  cntoken:
+    type: openai_compatible
+    enabled: true
+    api_key: ${CNTOKEN_API_KEY}
+    base_url: https://www.cntokenworld.com/api/aistore/v1
+    model: neice-deepseek-v4
+  minmax:
+    type: openai_compatible
+    enabled: true
+    api_key: ${MINMAX_API_KEY}
+    base_url: https://api.minimaxi.com/v1
+    model: MiniMax-M3
+adapters:
+  openai:
+    trusted_base_hosts: []
+  feishu:
+    enabled: true
+    app_id: ${FEISHU_APP_ID}
+    app_secret: ${FEISHU_APP_SECRET}
+    message_format: auto
+  wechat:
+    enabled: false
+    token: ''
+paths:
+  # Defaults to <project_root>/.env when unset. Relative paths in this
+  # file resolve against the directory containing config.yaml.
+  dotenv: .env
+system_prompt: 你是 aaagent，一个 AI 助手。你可以使用文件读写、目录列表、搜索和 shell 工具来帮助用户完成任务。如果需要使用工具，请通过 tool_calls 调用。工具执行后，综合结果给出自然语言回复。注意：文件操作仅限于授权目录内。不要泄露 API key 等敏感信息。你拥有 remember 和 recall 工具，可以记住和回忆信息。当你发现值得长期记住的信息（如用户偏好、身份、重要事实）时，请主动调用 remember。当你需要了解用户的历史信息时，请调用 recall。
+limits:
+  max_tool_wallclock_s: 120
+  max_tool_turns: 10
+  max_tool_chars: 200000
+  provider_rpm: 30
+  provider_persistence: disk
+  protected_paths:
+    - config.yaml
+    - config.yaml.bak
+    - .env
+    - .env.*
+    - '*.pem'
+    - '*.key'
+    - '**/id_rsa*'
+tools:
+  allowed_dirs:
+    - .
+  shell:
+    enabled: true
+    timeout: 30
+    max_output: 4096
+  websearch:
+    enabled: true
+    backend: tavily
+    api_key: ${TAVILY_API_KEY}
+    max_results: 5
+    timeout: 15
+  webscrape:
+    enabled: true
+    timeout: 20
+    max_bytes: 5000000
+memory:
+  enabled: true
+  data_dir: data/memories
+  archive_after_hours: 24
+  recall:
+    relevance_weight: 0.7
+    recency_weight: 0.3
+    recency_decay: 0.1
+session:
+  max_history: 20
+  compress_threshold: 0.8
+slash_command_blacklist:
+  feishu:
+    - /quit
+    - /exit
+    - /session
+log_level: INFO

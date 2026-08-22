@@ -283,6 +283,17 @@ class Application:
             cfg = yaml.safe_load(raw) or {}
             logger.debug("Loaded config (redacted):\n%s", scrub(raw))
             return cfg
+        example = p.with_name("config.yaml.example")
+        if example.exists():
+            import shutil
+
+            shutil.copy2(example, p)
+            logger.warning(
+                "%s not found; copied from %s — edit it before running /model.",
+                p,
+                example,
+            )
+            return self._load_config(path)
         return {}
 
     def _setup_tool_registry(self) -> ToolRegistry:

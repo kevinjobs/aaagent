@@ -185,14 +185,21 @@ Add new path-typed config keys to `_PATH_KEYS` in
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in your API keys:
+`config.yaml` is a **local, machine-specific file** — it is
+**gitignored** and should never be committed. The version-controlled
+template is `config.yaml.example`.
 
 ```bash
 cp .env.example .env
+cp config.yaml.example config.yaml
 ```
 
-Edit `config.yaml` to wire providers, adapters, tools, memory, and rate
-limits.
+Fill in API keys in `.env`, then edit `config.yaml` to wire providers,
+adapters, tools, memory, and rate limits.
+
+On first run, if `config.yaml` is missing, aaagent auto-copies
+`config.yaml.example` into `config.yaml` and logs a warning — you still
+need to fill in the keys before `/model` works.
 
 ### Providers
 

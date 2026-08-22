@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.1 - Unreleased
+
+### `config.yaml` is now machine-local
+
+`config.yaml` (and its runtime `.bak` / `.tmp` backups) is
+**gitignored** — it holds machine-specific absolute paths and is not
+meant to be shared. The version-controlled template is
+`config.yaml.example`.
+
+- **`config.yaml.example`**: sanitised copy of the previous default
+  config. Absolute `D:\...` paths replaced with relative defaults
+  (`paths.dotenv: .env`, `memory.data_dir: data/memories`,
+  `tools.allowed_dirs: [.]`, `protected_paths` as globs). `base_url`
+  values are public provider endpoints and are kept as-is.
+- **First-run bootstrap**: when `config.yaml` is missing, `Application`
+  auto-copies `config.yaml.example` to `config.yaml` and logs a warning,
+  so `aaagent run` works out of the box on a fresh clone.
+- **History rewrite**: `config.yaml` and `config.yaml.bak` were removed
+  from git history (filter scripts), not just `HEAD`.
+
 ## 0.4.0 - Unreleased
 
 ### Capability limits (security)

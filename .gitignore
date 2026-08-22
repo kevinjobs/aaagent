@@ -1,4 +1,8 @@
 .env
+# Local machine config — template is config.yaml.example
+config.yaml
+config.yaml.bak
+config.yaml.tmp
 .venv
 __pycache__/
 *.pyc
