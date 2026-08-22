@@ -160,11 +160,29 @@ def _session_handler(arg: str, ctx: SlashContext) -> SlashResult:
 
 
 def _sessions_handler(arg: str, ctx: SlashContext) -> SlashResult:
+    from types import SimpleNamespace
+
     app = ctx.app
     store = getattr(app, "_session_store", None) if app else None
     if store is None or not hasattr(store, "list_sessions"):
         return SlashResult(reply="(session store unavailable)")
     sessions = list(store.list_sessions())
+
+    # Always surface the current session even if the store hasn't seen
+    # any messages for it yet (e.g. user typed /sessions immediately
+    # after starting the CLI before sending any user message). Without
+    # this, the user is told "No sessions yet" while clearly in one.
+    seen_ids = {s.id for s in sessions}
+    if ctx.session_id not in seen_ids:
+        sessions.append(
+            SimpleNamespace(
+                id=ctx.session_id,
+                last_activity=0,
+                messages=[],
+                summary="",
+            )
+        )
+
     if not sessions:
         return SlashResult(reply="No sessions yet.")
 

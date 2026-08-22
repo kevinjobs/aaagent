@@ -129,18 +129,6 @@ def test_sessions_lists_with_current_marker():
     assert "[summary: old chat" in (result.reply or "")
 
 
-def test_sessions_empty():
-    fake_store = SimpleNamespace(list_sessions=lambda: [])
-    app = SimpleNamespace(_commands=None, _session_store=fake_store)
-    ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
-
-    reg = SlashCommandRegistry()
-    register_builtins(reg)
-    result = reg.handle("/sessions", ctx)
-    assert result.matched is True
-    assert "No sessions yet" in (result.reply or "")
-
-
 def test_sessions_no_store_graceful():
     app = SimpleNamespace(_commands=None, _session_store=None)
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
@@ -150,6 +138,48 @@ def test_sessions_no_store_graceful():
     result = reg.handle("/sessions", ctx)
     assert result.matched is True
     assert "unavailable" in (result.reply or "")
+
+
+def test_sessions_includes_current_when_store_empty():
+    """Regression: /sessions used to show 'No sessions yet.' when the
+    store was empty even though the user was clearly in a session.
+    """
+    fake_store = SimpleNamespace(list_sessions=lambda: [])
+    app = SimpleNamespace(_commands=None, _session_store=fake_store)
+    ctx = SlashContext(
+        platform="cli",
+        session_id="cli-default",
+        chat_id="cli-default",
+        app=app,
+    )
+
+    reg = SlashCommandRegistry()
+    register_builtins(reg)
+    result = reg.handle("/sessions", ctx)
+    assert result.matched is True
+    assert "No sessions yet" not in (result.reply or "")
+    assert "* cli-default" in (result.reply or "")
+    assert "(0 msgs)" in (result.reply or "")
+
+
+def test_sessions_includes_current_when_store_has_others_but_not_current():
+    fake_session_a = SimpleNamespace(
+        id="cli-foo", last_activity=100, messages=[1], summary=""
+    )
+    fake_store = SimpleNamespace(list_sessions=lambda: [fake_session_a])
+    app = SimpleNamespace(_commands=None, _session_store=fake_store)
+    ctx = SlashContext(
+        platform="cli",
+        session_id="cli-default",
+        chat_id="cli-default",
+        app=app,
+    )
+
+    reg = SlashCommandRegistry()
+    register_builtins(reg)
+    result = reg.handle("/sessions", ctx)
+    assert "* cli-default" in (result.reply or "")
+    assert " cli-foo" in (result.reply or "")
 
 
 def test_blacklisted_command_returns_unsupported_reply():

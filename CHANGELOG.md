@@ -14,7 +14,9 @@
   `cli-new-143012`) instead of just reporting the current one; the old
   behaviour of switching by name is preserved.
 - New `/sessions` lists all known sessions from `SessionStore`, marking
-  the current one with `*`.
+  the current one with `*`. The current session is always shown, even
+  if the user typed `/sessions` before sending any user message (in
+  which case the store is empty).
 - CLI slash replies now render `[bold green]` (was `[dim]`) so command
   feedback is visible in every terminal theme.
 - Per-platform blacklists (`config.yaml: slash_command_blacklist.<platform>`)
