@@ -4,11 +4,19 @@
 
 ### Slash commands
 - New `aaagent.core.commands.SlashCommandRegistry` centralises chat-time
-  meta commands (`/help`, `/session`, `/quit`, `/exit`). CLI and Feishu
-  adapters now both emit a `slash_command` bus event for lines starting
-  with `/`; core routes through the registry and emits `slash_reply`,
-  `slash_quit`, `slash_session_switch`, `slash_unknown` for adapters to
-  act on.
+  meta commands. CLI and Feishu adapters both emit a `slash_command`
+  bus event for lines starting with `/`; core routes through the
+  registry and emits `slash_reply`, `slash_quit`,
+  `slash_session_switch`, `slash_unknown` for adapters to act on.
+- Built-ins: `/help`, `/quit`, `/session`, `/sessions`. The redundant
+  `/exit` alias was removed (use `/quit`).
+- `/session` with no args now starts a brand-new session (auto-id like
+  `cli-new-143012`) instead of just reporting the current one; the old
+  behaviour of switching by name is preserved.
+- New `/sessions` lists all known sessions from `SessionStore`, marking
+  the current one with `*`.
+- CLI slash replies now render `[bold green]` (was `[dim]`) so command
+  feedback is visible in every terminal theme.
 - Per-platform blacklists (`config.yaml: slash_command_blacklist.<platform>`)
   suppress side effects on platforms where they don't make sense (e.g.
   `/quit` on Feishu) while still replying a friendly "this platform does

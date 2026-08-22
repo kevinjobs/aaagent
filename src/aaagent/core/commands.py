@@ -127,12 +127,60 @@ def _quit_handler(arg: str, ctx: SlashContext) -> SlashResult:
     return SlashResult(stop_adapter=True, reply="Bye.")
 
 
+def _generate_new_session_id(ctx: SlashContext, app: Any) -> str:
+    from datetime import datetime
+
+    suffix = datetime.now().strftime("%H%M%S")
+    candidate = f"{ctx.platform}-new-{suffix}"
+    store = getattr(app, "_session_store", None) if app else None
+    if store is not None and hasattr(store, "list_sessions"):
+        existing = {s.id for s in store.list_sessions()}
+        n = 1
+        while candidate in existing:
+            candidate = f"{ctx.platform}-new-{suffix}-{n}"
+            n += 1
+    return candidate
+
+
 def _session_handler(arg: str, ctx: SlashContext) -> SlashResult:
     arg = arg.strip()
+    app = ctx.app
+
     if not arg:
-        return SlashResult(reply=f"Current session: {ctx.session_id}")
-    new = arg if arg.startswith(f"{ctx.platform}-") else f"{ctx.platform}-{arg}"
-    return SlashResult(switch_session=new, reply=f"Switched to session: {new}")
+        new_id = _generate_new_session_id(ctx, app)
+        return SlashResult(
+            switch_session=new_id,
+            reply=f"Started new session: {new_id}",
+        )
+
+    target = arg if arg.startswith(f"{ctx.platform}-") else f"{ctx.platform}-{arg}"
+    if target == ctx.session_id:
+        return SlashResult(reply=f"Already in session: {target}")
+    return SlashResult(switch_session=target, reply=f"Switched to session: {target}")
+
+
+def _sessions_handler(arg: str, ctx: SlashContext) -> SlashResult:
+    app = ctx.app
+    store = getattr(app, "_session_store", None) if app else None
+    if store is None or not hasattr(store, "list_sessions"):
+        return SlashResult(reply="(session store unavailable)")
+    sessions = list(store.list_sessions())
+    if not sessions:
+        return SlashResult(reply="No sessions yet.")
+
+    current = ctx.session_id
+    lines = []
+    for s in sorted(
+        sessions, key=lambda x: getattr(x, "last_activity", 0), reverse=True
+    ):
+        marker = "*" if s.id == current else " "
+        msg_count = len(getattr(s, "messages", []) or [])
+        summary = getattr(s, "summary", "") or ""
+        preview = (
+            f"  [summary: {summary[:30]}...]" if summary else ""
+        )
+        lines.append(f"{marker} {s.id}  ({msg_count} msgs){preview}")
+    return SlashResult(reply="Sessions:\n" + "\n".join(lines))
 
 
 def register_builtins(reg: SlashCommandRegistry) -> None:
@@ -147,14 +195,14 @@ def register_builtins(reg: SlashCommandRegistry) -> None:
         handler=_quit_handler,
     )
     reg.register(
-        "/exit",
-        description="Exit chat (alias of /quit)",
-        handler=_quit_handler,
+        "/session",
+        description="Start a new session (/session <name> to switch)",
+        handler=_session_handler,
     )
     reg.register(
-        "/session",
-        description="Switch session (use: /session <name>)",
-        handler=_session_handler,
+        "/sessions",
+        description="List all known sessions (current marked with *)",
+        handler=_sessions_handler,
     )
 
 

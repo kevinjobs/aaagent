@@ -301,8 +301,10 @@ python -m aaagent chat
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
-| `/session <name>` | Switch to a different session |
-| `/quit` or `/exit` | Exit chat |
+| `/session` | Start a new session (auto-generated id like `cli-new-143012`) |
+| `/session <name>` | Switch to session `<name>` (prefix auto-applied if missing) |
+| `/sessions` | List all known sessions (current marked with `*`) |
+| `/quit` | Exit chat |
 
 Slash commands are handled centrally by `aaagent.core.commands.SlashCommandRegistry`
 so future IM adapters (web, Slack, ...) get the same `/help` / `/session`

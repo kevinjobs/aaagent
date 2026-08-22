@@ -50,6 +50,9 @@ def test_help_lists_builtins():
     assert "/help" in (result.reply or "")
     assert "/quit" in (result.reply or "")
     assert "/session" in (result.reply or "")
+    assert "/sessions" in (result.reply or "")
+    # /exit removed; should not appear in help
+    assert "/exit" not in (result.reply or "")
 
 
 def test_quit_signals_stop_adapter():
@@ -61,20 +64,21 @@ def test_quit_signals_stop_adapter():
     assert result.reply == "Bye."
 
 
-def test_exit_alias_same_as_quit():
+def test_exit_no_longer_registered():
     reg = SlashCommandRegistry()
     register_builtins(reg)
     result = reg.handle("/exit", _ctx())
-    assert result.stop_adapter is True
+    assert result.matched is False
 
 
-def test_session_without_arg_reports_current():
+def test_session_no_arg_starts_new_session():
     reg = SlashCommandRegistry()
     register_builtins(reg)
-    result = reg.handle("/session", _ctx(session_id="cli-foo"))
+    result = reg.handle("/session", _ctx())
     assert result.matched is True
-    assert "cli-foo" in (result.reply or "")
-    assert result.switch_session is None
+    assert result.switch_session is not None
+    assert result.switch_session.startswith("cli-new-")
+    assert "Started new session" in (result.reply or "")
 
 
 def test_session_with_arg_switches():
@@ -83,6 +87,7 @@ def test_session_with_arg_switches():
     result = reg.handle("/session bar", _ctx())
     assert result.matched is True
     assert result.switch_session == "cli-bar"
+    assert "Switched to session" in (result.reply or "")
 
 
 def test_session_strips_already_prefixed_arg():
@@ -90,6 +95,61 @@ def test_session_strips_already_prefixed_arg():
     register_builtins(reg)
     result = reg.handle("/session cli-bar", _ctx())
     assert result.switch_session == "cli-bar"
+
+
+def test_session_same_id_noops():
+    reg = SlashCommandRegistry()
+    register_builtins(reg)
+    result = reg.handle("/session cli-default", _ctx(session_id="cli-default"))
+    assert result.matched is True
+    assert result.switch_session is None
+    assert "Already in session" in (result.reply or "")
+
+
+def test_sessions_lists_with_current_marker():
+    from types import SimpleNamespace
+
+    fake_session_a = SimpleNamespace(
+        id="cli-default", last_activity=100, messages=[1, 2, 3], summary=""
+    )
+    fake_session_b = SimpleNamespace(
+        id="cli-foo", last_activity=200, messages=[], summary="old chat"
+    )
+    fake_store = SimpleNamespace(list_sessions=lambda: [fake_session_a, fake_session_b])
+    app = SimpleNamespace(_commands=None, _session_store=fake_store)
+    ctx = SlashContext(platform="cli", session_id="cli-default", chat_id="x", app=app)
+
+    reg = SlashCommandRegistry()
+    register_builtins(reg)
+    result = reg.handle("/sessions", ctx)
+    assert result.matched is True
+    assert "Sessions:" in (result.reply or "")
+    assert "* cli-default" in (result.reply or "")
+    assert " cli-foo" in (result.reply or "")
+    assert "[summary: old chat" in (result.reply or "")
+
+
+def test_sessions_empty():
+    fake_store = SimpleNamespace(list_sessions=lambda: [])
+    app = SimpleNamespace(_commands=None, _session_store=fake_store)
+    ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
+
+    reg = SlashCommandRegistry()
+    register_builtins(reg)
+    result = reg.handle("/sessions", ctx)
+    assert result.matched is True
+    assert "No sessions yet" in (result.reply or "")
+
+
+def test_sessions_no_store_graceful():
+    app = SimpleNamespace(_commands=None, _session_store=None)
+    ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
+
+    reg = SlashCommandRegistry()
+    register_builtins(reg)
+    result = reg.handle("/sessions", ctx)
+    assert result.matched is True
+    assert "unavailable" in (result.reply or "")
 
 
 def test_blacklisted_command_returns_unsupported_reply():

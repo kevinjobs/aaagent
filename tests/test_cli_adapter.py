@@ -30,6 +30,40 @@ def _make_adapter() -> tuple[CliAdapter, _ConsoleSpy]:
 
 
 @pytest.mark.asyncio
+async def test_cli_slash_reply_renders_with_bold_green():
+    """slash_reply must use bold green markup so it's visible in the terminal."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    bus = EventBus()
+    adapter = CliAdapter({}, bus)
+    captured = StringIO()
+    adapter._console = Console(  # type: ignore[assignment]
+        file=captured,
+        force_terminal=True,
+        color_system="truecolor",
+        width=200,
+    )
+
+    await bus.emit(
+        "slash_reply",
+        {
+            "platform": "cli",
+            "session_id": adapter._session_id,
+            "chat_id": adapter._session_id,
+            "reply": "Available commands:\n  /help - foo",
+            "suppressed": False,
+        },
+    )
+
+    rendered = captured.getvalue()
+    assert "Available commands" in rendered
+    # ANSI: 1=bold, 32=green -> "\x1b[1;32m" prefix
+    assert "\x1b[1;32m" in rendered or "\x1b[1;38;5;" in rendered
+
+
+@pytest.mark.asyncio
 async def test_cli_help_does_not_emit_message_received():
     adapter, spy = _make_adapter()
     captured = []
