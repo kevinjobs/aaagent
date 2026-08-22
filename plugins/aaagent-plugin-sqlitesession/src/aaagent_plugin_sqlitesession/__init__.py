@@ -459,6 +459,10 @@ class _DualWriteSessionStore(SessionStore):
     def max_sessions(self) -> int:
         return self._primary.max_sessions
 
+    @property
+    def _system_prompt(self) -> str:
+        return self._primary._system_prompt
+
     async def close(self) -> None:
         await self._drain_pending()
         await self._secondary.close()

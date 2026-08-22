@@ -203,6 +203,18 @@ async def test_dual_write_writes_to_both_stores(tmp_db_path_str: str, tmp_path: 
     await store.close()
 
 
+async def test_dual_write_exposes_system_prompt(tmp_db_path_str: str, tmp_path: Path):
+    """Regression: app.py reads session_store._system_prompt; the
+    dual-write wrapper must expose it (delegated to the primary)."""
+    primary = InMemorySessionStore(system_prompt="hello dual")
+    secondary = SqliteSessionStore(
+        db_path=tmp_db_path_str, base_path=tmp_path
+    )
+    store = _DualWriteSessionStore(primary, secondary, restore_n=0)
+    assert store._system_prompt == "hello dual"
+    await store.close()
+
+
 async def test_dual_write_does_not_block_on_sqlite_failure(tmp_path: Path):
     primary = InMemorySessionStore()
     broken_path = tmp_path / "nope" / "x" / "y" / "sessions.db"
