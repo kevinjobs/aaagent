@@ -168,6 +168,12 @@ adapters:
     enabled: false
     app_id: "${FEISHU_APP_ID}"
     app_secret: "${FEISHU_APP_SECRET}"
+    # text | markdown | auto (default auto)
+    # When auto, messages containing markdown syntax (`# `, `**bold**`,
+    # `` `code` ``, `[link](url)`, lists, blockquotes, code fences) are
+    # sent as Feishu Card v2 with a markdown element so the server
+    # renders them. Plain prose stays as `msg_type: text`.
+    message_format: auto
   cli:
     enabled: true
 ```

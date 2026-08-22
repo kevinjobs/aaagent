@@ -30,6 +30,12 @@ WS_BACKOFF_BASE = 1.0
 WS_BACKOFF_MAX = 60.0
 FEISHU_DEBUG = os.environ.get("FEISHU_DEBUG", "").lower() in ("1", "true", "yes")
 
+_MD_MARKERS = re.compile(
+    r"(?:\*\*|__|`|#{1,6}\s|\[.*?\]\(|>\s|^[-+*]\s|\d+\.\s|```)",
+    re.MULTILINE,
+)
+_VALID_FORMATS = {"text", "markdown", "auto"}
+
 logger = logging.getLogger("aaagent.feishu")
 if FEISHU_DEBUG:
     logger.setLevel(logging.DEBUG)
@@ -54,6 +60,14 @@ class FeishuAdapter(IMAdapter):
         self._app_id = app_id
         self._app_secret = app_secret
         self._domain = config.get("domain", FEISHU_DOMAIN).rstrip("/")
+        fmt = str(config.get("message_format", "auto")).lower()
+        if fmt not in _VALID_FORMATS:
+            logger.warning(
+                "Unknown feishu.message_format %r, falling back to 'auto'",
+                fmt,
+            )
+            fmt = "auto"
+        self._message_format = fmt
         self._running = False
         self._stop_event = asyncio.Event()
         self._ws_task: asyncio.Task | None = None
@@ -168,11 +182,10 @@ class FeishuAdapter(IMAdapter):
             return
 
         content = self._truncate_for_feishu(msg.content)
-        body = {
-            "receive_id": chat_id,
-            "msg_type": "text",
-            "content": json.dumps({"text": content}),
-        }
+        fmt = self._message_format
+        if fmt == "auto":
+            fmt = "markdown" if _looks_like_markdown(content) else "text"
+        body = _build_send_body(chat_id, content, fmt)
         params = {"receive_id_type": "chat_id"}
 
         for attempt in range(SEND_MAX_RETRIES):
@@ -511,6 +524,42 @@ class FeishuAdapter(IMAdapter):
         text = data.get("text", "")
         text = re.sub(r"@_user_\d+\s*", "", text)
         return text.strip()
+
+
+def _looks_like_markdown(text: str) -> bool:
+    return bool(_MD_MARKERS.search(text))
+
+
+def _build_send_body(chat_id: str, content: str, fmt: str) -> dict:
+    """Build the body for the Feishu send-message API.
+
+    fmt == "markdown" -> Card v2 with a single `markdown` element so the
+    server renders standard markdown (bold/italic/code/links/lists/
+    headings). fmt == "text" -> plain text payload (no rendering).
+    """
+    if fmt == "markdown":
+        return {
+            "receive_id": chat_id,
+            "msg_type": "interactive",
+            "content": json.dumps(
+                {
+                    "schema": "2.0",
+                    "card": {
+                        "body": {
+                            "elements": [
+                                {"tag": "markdown", "content": content}
+                            ]
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        }
+    return {
+        "receive_id": chat_id,
+        "msg_type": "text",
+        "content": json.dumps({"text": content}, ensure_ascii=False),
+    }
 
 
 def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:

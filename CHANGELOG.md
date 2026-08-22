@@ -2,6 +2,18 @@
 
 ## 0.3.1 - Unreleased
 
+### Adapters
+- **feishu**: new `adapters.feishu.message_format` config option
+  (`text` | `markdown` | `auto`, default `auto`). `text` keeps the
+  previous plain-text behaviour (no markdown rendering);
+  `markdown` always sends a Feishu Card v2 with a `markdown` element
+  so the server renders bold/italic/code/links/lists/headings;
+  `auto` picks `markdown` whenever the content contains a recognised
+  markdown marker (`**`, `__`, `` ` ``, `#`, `>`, list bullets/numbers,
+  `[…](…)`, fenced code blocks) and `text` otherwise. Slash-command
+  replies and LLM output both flow through the same path. Invalid
+  values log a warning and fall back to `auto`.
+
 ### Slash commands
 - New `aaagent.core.commands.SlashCommandRegistry` centralises chat-time
   meta commands. CLI and Feishu adapters both emit a `slash_command`
