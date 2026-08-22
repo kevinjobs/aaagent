@@ -20,6 +20,7 @@ members = [
     "aaagent-plugin-memorytools",
     "aaagent-plugin-openai",
     "aaagent-plugin-shelltools",
+    "aaagent-plugin-skills",
     "aaagent-plugin-webscrape",
     "aaagent-plugin-websearch",
 ]
@@ -173,6 +174,17 @@ requires-dist = [
 name = "aaagent-plugin-shelltools"
 version = "0.1.0"
 source = { editable = "plugins/aaagent-plugin-shelltools" }
+dependencies = [
+    { name = "aaagent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "aaagent", editable = "." }]
+
+[[package]]
+name = "aaagent-plugin-skills"
+version = "0.1.0"
+source = { editable = "plugins/aaagent-plugin-skills" }
 dependencies = [
     { name = "aaagent" },
 ]

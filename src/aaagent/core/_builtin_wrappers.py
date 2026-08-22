@@ -24,6 +24,7 @@ BUILTIN_TOOLS: dict[str, str] = {
     "file": "aaagent_plugin_filetools:FileToolsPlugin",
     "shell": "aaagent_plugin_shelltools:ShellToolsPlugin",
     "memory": "aaagent_plugin_memorytools:MemoryToolsPlugin",
+    "skills": "aaagent_plugin_skills:SkillsPlugin",
 }
 
 BUILTIN_SESSIONS: dict[str, str] = {

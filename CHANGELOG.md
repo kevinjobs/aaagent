@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.2 - Unreleased
+
+### Skills plugin — LLM-authorable, file-backed instructions
+
+New plugin `aaagent-plugin-skills` registers four tools that let the
+LLM manage a personal skill library:
+
+- **`create_skill`** — writes a Markdown file with YAML frontmatter
+  to `data/skills/<name>.md`. The LLM is instructed to ask the user
+  before generating a new skill ("这个流程可以保存为 skill 方便下次
+  复用，要生成吗？") rather than generating silently.
+- **`list_skills`** — scans the skills directory, returns name /
+  description / tags for each. Optional `tags` filter.
+- **`load_skill`** — reads a skill file and returns it as a tool
+  response, injecting its full content into the conversation for the
+  LLM to reference. Session-scoped (not cross-session).
+- **`delete_skill`** — removes a skill file. Only called on explicit
+  user request.
+
+Skills are **session-scoped**: the LLM must actively `load_skill` each
+session. No automatic injection — this keeps the system simple and
+self-governing. The LLM also decides when to proactively suggest
+generating a skill based on context, per the tool description.
+
+Config under `tools.skills.skills_dir` (default `data/skills`),
+resolves against project root via `resolve_all_paths`.
+
 ## 0.4.1 - Unreleased
 
 ### `config.yaml` is now machine-local

@@ -30,6 +30,7 @@ _PATH_KEYS: dict[tuple[str, ...], str] = {
     ("memory", "base_path"): "scalar",
     ("memory", "data_dir"): "scalar",
     ("tools", "allowed_dirs"): "list",
+    ("tools", "skills", "skills_dir"): "scalar",
     ("limits", "protected_paths"): "list",
 }
 

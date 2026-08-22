@@ -35,6 +35,7 @@ members = [
     "plugins/aaagent-plugin-shelltools",
     "plugins/aaagent-plugin-memorytools",
     "plugins/aaagent-plugin-mcp",
+    "plugins/aaagent-plugin-skills",
     "plugins/aaagent-plugin-cliadapter",
     "plugins/aaagent-plugin-feishu",
     "plugins/aaagent-plugin-inmemorysession",
@@ -50,6 +51,7 @@ aaagent-plugin-filetools = { workspace = true }
 aaagent-plugin-shelltools = { workspace = true }
 aaagent-plugin-memorytools = { workspace = true }
 aaagent-plugin-mcp = { workspace = true }
+aaagent-plugin-skills = { workspace = true }
 aaagent-plugin-cliadapter = { workspace = true }
 aaagent-plugin-feishu = { workspace = true }
 aaagent-plugin-inmemorysession = { workspace = true }

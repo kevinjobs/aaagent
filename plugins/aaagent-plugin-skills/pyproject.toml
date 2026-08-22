@@ -1,0 +1,19 @@
+[project]
+name = "aaagent-plugin-skills"
+version = "0.1.0"
+description = "skill management tool plugin for aaagent"
+requires-python = ">=3.11"
+dependencies = ["aaagent"]
+
+[project.entry-points."aaagent.tools"]
+skills = "aaagent_plugin_skills:SkillsPlugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aaagent_plugin_skills"]
+
+[tool.uv.sources]
+aaagent = { workspace = true }

@@ -70,6 +70,9 @@ limits:
 tools:
   allowed_dirs:
     - .
+  skills:
+    enabled: true
+    skills_dir: data/skills
   shell:
     enabled: true
     timeout: 30
