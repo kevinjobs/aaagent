@@ -8,6 +8,7 @@ import unicodedata
 from typing import Any
 
 from aaagent.core.plugin import ToolPlugin
+from aaagent.core.sanitize import scrub
 
 logger = logging.getLogger("aaagent.tools.shell")
 
@@ -138,7 +139,7 @@ async def run_shell(args: dict[str, Any]) -> str:
     except FileNotFoundError:
         return f"Error: command not found: {shlex.split(command)[0]}"
     except Exception as e:
-        return f"Error executing shell command: {e}"
+        return f"Error executing shell command: {scrub(str(e))}"
 
 
 class ShellToolsPlugin(ToolPlugin):

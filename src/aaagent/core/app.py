@@ -37,6 +37,7 @@ from aaagent.core.plugin import (
 )
 from aaagent.core.prompt import PromptBuilder
 from aaagent.core.ratelimit import TokenBucket
+from aaagent.core.sanitize import scrub, wrap_existing_handlers
 from aaagent.core.session import SessionStore
 from aaagent.core.types import ChatResponse, LLMProvider, PROVIDER_TYPE_REGISTRY
 from aaagent.core.tool_registry import ToolRegistry
@@ -48,19 +49,6 @@ _UNCLOSED_THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*\Z", re.DOTALL | re.IG
 _PUBLIC_ERROR = "服务暂时不可用，请稍后再试。"
 _MAX_TOOL_TURNS = 20
 _MAX_TOOL_CHARS = 200_000
-
-_REDACT_PATTERNS = [
-    (re.compile(r'(?i)(api_key\s*[:=]\s*)["\']?[A-Za-z0-9._\-]+["\']?'), r"\1***"),
-    (re.compile(r'(?i)(app_secret\s*[:=]\s*)["\']?[A-Za-z0-9._\-]+["\']?'), r"\1***"),
-    (re.compile(r'(?i)(\btoken\s*[:=]\s*)["\']?[A-Za-z0-9._\-]{6,}["\']?'), r"\1***"),
-    (re.compile(r'(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._\-]+'), r"\1***"),
-]
-
-
-def _redact_yaml(yaml_text: str) -> str:
-    for pat, repl in _REDACT_PATTERNS:
-        yaml_text = pat.sub(repl, yaml_text)
-    return yaml_text
 
 
 def _strip_think(text: str) -> str:
@@ -215,6 +203,9 @@ class Application:
         self._provider_buckets: dict[str, TokenBucket] = {}
         self._commands = SlashCommandRegistry()
         register_builtins(self._commands)
+        # Wrap every logger handler so secret-bearing exception strings
+        # never reach log files or stderr (Core 3 of capability limits).
+        wrap_existing_handlers()
         self._setup()
 
     def _load_config(self, path: str) -> dict[str, Any]:
@@ -223,7 +214,7 @@ class Application:
             with open(p, encoding="utf-8") as f:
                 raw = f.read()
             cfg = yaml.safe_load(raw) or {}
-            logger.debug("Loaded config (redacted):\n%s", _redact_yaml(raw))
+            logger.debug("Loaded config (redacted):\n%s", scrub(raw))
             return cfg
         return {}
 

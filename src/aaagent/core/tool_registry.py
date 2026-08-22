@@ -4,6 +4,8 @@ import json
 import logging
 from typing import Any, Callable, Coroutine
 
+from aaagent.core.sanitize import scrub
+
 Handler = Callable[[dict[str, Any]], Coroutine[Any, Any, str]]
 
 logger = logging.getLogger("aaagent.tools")
@@ -76,4 +78,4 @@ class ToolRegistry:
             return result
         except Exception as e:
             logger.exception("Tool '%s' execution failed", name)
-            return f"Error executing tool '{name}': {e}"
+            return f"Error executing tool '{name}': {scrub(str(e))}"
