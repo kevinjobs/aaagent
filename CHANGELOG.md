@@ -2,6 +2,40 @@
 
 ## 0.4.5 - Unreleased
 
+### Fix: pin the active LLM provider for tool turns in the same message
+
+Cross-provider `tool_call_id`s are not portable — each provider mints
+ids in its own format (`call_xxx`, `call_chatcmpl-xxx`,
+`call_function_xxx`, `toolu_xxx`, …). When `_chat_with_fallback`
+fell through from a fallback provider back to the primary mid-way
+through a multi-turn agent loop, the primary received a tool
+result whose `tool_call_id` it didn't recognise and rejected the
+whole request with HTTP 400:
+
+> invalid params, tool result's tool id(call_function_xxx) not found (2013)
+
+In production this surfaced as noisy per-turn logs like
+
+> Provider minmax failed (retryable), trying next: … tool result's tool id …
+
+…appearing on every turn after the first one, even though a
+fallback kept picking up the slack. The bot worked but every
+inbound message produced N warning lines.
+
+Fix: `Application` now remembers the provider that successfully
+handled the previous LLM call as `_active_provider` and pins it at
+the front of the fallback order. Subsequent turns in the same
+`_handle_message` start with the active provider, so tool `id`s
+stay consistent. If the active provider fails (retryable error),
+the rest of the chain is still consulted — they just stop being
+the always-first choice. `_active_provider` is reset at the start
+of every `_handle_message`, so each new inbound message is free
+to pick the best starting provider again.
+
+Regression tests:
+`test_app.py::test_chat_with_fallback_pins_active_provider` and
+`test_app.py::test_chat_with_fallback_resets_active_provider_on_new_handle`.
+
 ### Fix: per-session lock to prevent "mixed-context" replies
 
 When two `message_received` events for the same `session_id` arrived

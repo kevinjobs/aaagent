@@ -256,6 +256,18 @@ class Application:
         # answers like greeting+scheduler-tips mixed together.
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_locks_guard = asyncio.Lock()
+        # `self._active_provider` is the provider that successfully handled
+        # the previous LLM call in this conversation. Once tool messages
+        # start flowing, every subsequent turn in `_handle_message` must
+        # use the SAME provider, because tool `tool_call_id`s aren't
+        # portable across providers — the new provider will reject any
+        # tool result whose id it didn't issue, with errors like
+        # "tool result's tool id(call_xxx) not found" (HTTP 400).
+        # We pin to the active provider at the front of the fallback
+        # order and reset it at the start of every `_handle_message`
+        # so each new inbound message is free to pick the best
+        # starting provider again.
+        self._active_provider: _ProviderProtocol | None = None
         # DefaultAgentLoop takes a back-reference to this Application; the
         # loop reads `_tool_registry`, `_chat_with_fallback`, `_session_store`,
         # `_bus`, `_provider_order`, `_acquire_provider_bucket`, and `_limits`.
@@ -517,14 +529,35 @@ class Application:
         if not providers:
             raise RuntimeError("No LLM provider configured")
 
+        # Pin the active provider at the front of the order so every
+        # subsequent LLM call in the same `_handle_message` hits the
+        # provider that issued the previous turn's `tool_call_id`s.
+        # Falling back mid-conversation produces provider-side 400s
+        # ("tool result's tool id ... not found") because the new
+        # provider doesn't recognise the old one's ids. Different
+        # vendors mint ids in different formats (e.g. `call_xxx`,
+        # `toolu_xxx`, `call_function_xxx`) and there is no portable
+        # translation layer.
+        active = self._active_provider
+        if active is not None and active in providers:
+            ordered: list[_ProviderProtocol] = [active] + [
+                p for p in providers if p is not active
+            ]
+        else:
+            ordered = list(providers)
+
         last_exc: Exception | None = None
-        for index, provider in enumerate(providers):
+        for index, provider in enumerate(ordered):
             try:
                 await self._acquire_provider_bucket(provider)
-                return await provider.chat(messages, tools=tools, **kwargs)
+                response = await provider.chat(messages, tools=tools, **kwargs)
+                # Record the provider that produced `tool_call_id`s the
+                # next turn will need to recognise.
+                self._active_provider = provider
+                return response
             except Exception as e:  # noqa: BLE001
                 last_exc = e
-                if index + 1 >= len(providers):
+                if index + 1 >= len(ordered):
                     break
                 if not _is_retryable_provider_error(e, provider=provider):
                     logger.error(
@@ -678,6 +711,11 @@ class Application:
         `message_to_send` emission so an alternative loop can swap in
         without touching this code.
         """
+        # Each inbound message is free to pick the best starting
+        # provider for a fresh conversation; pinning only matters
+        # within a single `_handle_message` call so the agent loop's
+        # tool turns stay on the same provider.
+        self._active_provider = None
         await self._session_store.add_message(msg.session_id, msg)
 
         session = await self._session_store.get_session(msg.session_id)
