@@ -1,5 +1,113 @@
 # Changelog
 
+## 0.4.0 - Unreleased
+
+### Capability limits (security)
+
+A configurable guard layer that keeps the LLM from running away or
+touching the wrong files. Every cap below has a safe built-in
+default; tune them under `limits:` in `config.yaml`.
+
+- **`limits.max_tool_turns`** (default `10`, was a 20-module-constant)
+  — number of agent turns before `_run_tool_loop` aborts with
+  "已达到最大工具调用次数".
+- **`limits.max_tool_chars`** (default `200000`) — cumulative size of
+  the `messages` list passed to the LLM. Aborts before context-window
+  overflow.
+- **`limits.max_tool_wallclock_s`** (default `120`, NEW) — outer
+  wall-clock fence around a single `_handle_message`. The previous
+  code only counted turns; a stuck loop could still hang forever if
+  each turn produced tool calls in a reasonable time. A timeout
+  surfaces as "工具循环超时（Ns），已中止。请简化请求或调整
+  limits.max_tool_wallclock_s。"
+- **`limits.provider_rpm`** (default `30`, was `0` = unlimited) —
+  per-provider token bucket. The previous default was
+  "unbounded", which combined badly with OpenAI SDK's own retry
+  loop on 429. The legacy `rate_limit.provider_rpm` key is still
+  read for backward-compat.
+- **`limits.provider_persistence`** (`disk` | `memory`, default
+  `disk`) — when `memory`, providers added/updated via `/model`
+  stay in-process only and are not written back to `config.yaml`.
+  Useful for testing a temporary provider.
+
+### Breaking change — `/model --key` now writes to `.env`, not `config.yaml`
+
+The previous `/model -new --key K` flow embedded the raw API key
+into `config.yaml` (where it could leak via VCS). New behaviour:
+
+- `DotenvStore.set(<provider>_API_KEY, K)` writes the key to
+  `.env` (atomic, comment-preserving, idempotent).
+- `config.yaml` is rewritten to hold `api_key: "${<provider>_API_KEY}"`
+  — a `${ENV_VAR}` reference, not the raw key.
+- `os.environ[<provider>_API_KEY]` is updated immediately so the
+  next provider instantiation picks up the new value without a
+  restart.
+- `audit log` records the env-var name and the set/overwrite/noop
+  result; the raw key is never logged.
+- **D2 warn before overwrite**: when `DotenvStore.set` returns
+  `"overwrite"` AND other providers in `config.yaml` reference the
+  same `${ENV_VAR}`, the reply appends a warning listing the
+  affected provider names. (Audit log records the env-var name and
+  the set of shared providers — the raw key is never logged.)
+
+Legacy provider entries with a raw `api_key: sk-…` in
+`config.yaml` are preserved untouched until the operator
+explicitly re-runs `/model --provider X --key K`, which migrates
+them in place.
+
+### Protected paths
+
+`limits.protected_paths` is a glob list (default: `config.yaml`,
+`config.yaml.bak`, `.env`, `.env.*`, `*.pem`, `*.key`,
+`**/id_rsa*`). Every agent filesystem write — through `write_file`
+AND through `run_shell`'s redirection targets (`>`, `>>`, `<`,
+`2>`, `&>`) — runs those paths through `is_protected_target()`
+and is refused if a match is found. Closes the
+`cat foo > config.yaml` bypass of the file plugin's path
+containment. `grep` also skips protected files during its walk.
+
+`aaagent.core.policy` exposes `is_protected_target()` and
+`extract_shell_paths()` for anyone building new tool plugins that
+want the same gate.
+
+### Secret scrubbing
+
+`aaagent.core.sanitize.scrub()` redacts `sk-…`, `sk-ant-…`,
+`ghp_…`, `xox[abprs]-…`, JWT tokens, `key=value` assignments for
+sensitive env vars, `Authorization: Bearer …` headers, and known
+per-provider env-var assignments (`MINMAX_API_KEY=`,
+`FEISHU_APP_SECRET=`, …) to `***`. It runs:
+
+- on every exception string returned by `tool_registry.execute`
+  (closes the "provider auth error echoes api_key back into the
+  next chat turn" leak path);
+- on every exception string returned by `run_shell`;
+- on every log record via `ScrubbingFormatter` installed by
+  `Application.__init__`.
+
+The old `_REDACT_PATTERNS` / `_redact_yaml` in `core.app` is
+removed in favour of a single `scrub()` source.
+
+### Project-root path resolution
+
+`config.yaml` is now the single anchor for every relative path the
+framework reads. Previously, `tools.allowed_dirs`,
+`memory.data_dir`, `paths.dotenv`, and `limits.protected_paths`
+were resolved against `os.getcwd()` at first use — meaning a
+remote-launched aaagent (Feishu, systemd, CI) could see a
+different filesystem than a locally-launched one. Now every
+path-typed key is rewritten to an absolute path anchored at
+`config.yaml.parent` at load time. `~` is expanded by
+`Path.expanduser()` before that step. `tools.allowed_dirs`
+defaults to `[<project_root>]` (was `[Path.cwd()]`); operators
+who actually want CWD-relative behaviour can set
+`tools.allowed_dirs: ["."]` explicitly.
+
+New `aaagent.core.paths.resolve_project_path()` /
+`resolve_all_paths()`. New `_PATH_KEYS` registry; add new
+path-typed config keys there to keep the resolution semantics
+uniform.
+
 ## 0.3.1 - Unreleased
 
 ### Breaking changes

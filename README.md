@@ -92,6 +92,97 @@ uv pip install aaagent-plugin-websearch aaagent-plugin-webscrape
   content as clean Markdown / text / HTML using httpx + trafilatura. JS-heavy
   pages fall back to title + first paragraph + link list. No API key required.
 
+## Capability limits
+
+Tune `limits:` in `config.yaml` to keep the agent from running
+away or touching the wrong files. Every cap below has a safe
+built-in default.
+
+```yaml
+limits:
+  # Outer fence on a single _handle_message call.
+  max_tool_wallclock_s: 120
+  # Maximum number of agent turns (LLM -> tools -> repeat) before
+  # the loop is aborted.
+  max_tool_turns: 10
+  # Cumulative size of the messages list passed to the LLM.
+  max_tool_chars: 200000
+  # Per-provider token bucket (default 30 RPM; legacy
+  # `rate_limit.provider_rpm` still honoured).
+  provider_rpm: 30
+  # Provider persistence: "disk" (default) or "memory" (transient).
+  provider_persistence: disk
+  # Globs the agent is never allowed to read or write, even through
+  # `run_shell` redirection. Keep the defaults.
+  protected_paths:
+    - config.yaml
+    - config.yaml.bak
+    - .env
+    - .env.*
+    - "*.pem"
+    - "*.key"
+    - "**/id_rsa*"
+```
+
+What the layers do:
+
+- **`max_tool_wallclock_s`** — outer wall-clock fence. A stuck
+  tool loop is killed after this many seconds; the user sees a
+  `工具循环超时（N s），已中止` reply.
+- **`max_tool_turns`** / **`max_tool_chars`** — turn count and
+  cumulative `messages` size limits inside the loop.
+- **`provider_rpm`** — per-provider token bucket. Default is now
+  `30` (was `0` = unlimited), so a runaway retry storm is bounded.
+- **`provider_persistence`** — `memory` mode means `/model -new`
+  keeps the provider in-process only and never touches
+  `config.yaml`. Useful for trying out a new provider without
+  leaving a permanent entry.
+- **`protected_paths`** — globs that the LLM is forbidden from
+  reading or writing. Enforced for `read_file` / `write_file` /
+  `list_dir` / `grep`, AND for `run_shell` redirection targets
+  (`>`, `>>`, `<`, `2>`, `&>`). Built on
+  `aaagent.core.policy.is_protected_target()`.
+
+### Secrets stay out of `config.yaml`
+
+`/model --key K` writes the key to `.env` (atomic,
+comment-preserving, idempotent) via
+`aaagent.core.dotenv_io.DotenvStore`. `config.yaml` only ever
+holds a `${ENV_VAR}` reference like `api_key:
+"${MINMAX_API_KEY}"`. If the new key overwrites an existing
+env var that's also used by other providers in `config.yaml`,
+the reply includes a `WARN overwrote <ENV>; also used by: ...`
+line.
+
+Legacy `api_key: sk-...` entries in `config.yaml` are preserved
+untouched until you explicitly re-run
+`/model --provider X --key K`, which migrates them in place.
+
+### Secret scrubbing
+
+`aaagent.core.sanitize.scrub()` redacts `sk-...`,
+`sk-ant-...`, `ghp_...`, `xox[abprs]-...`, JWT tokens, sensitive
+env-var assignments, and `Authorization: Bearer ...` headers to
+`***`. It runs on every exception string returned by a tool
+(so a provider auth error that includes `sk-...` cannot be
+echoed back to the LLM on the next turn) AND on every log
+record via a `ScrubbingFormatter` installed by
+`Application.__init__`.
+
+### Project-root paths
+
+`config.yaml` is the single anchor for every relative path the
+framework reads. `tools.allowed_dirs`, `memory.data_dir`,
+`paths.dotenv`, and `limits.protected_paths` are all rewritten
+to absolute paths anchored at the directory containing
+`config.yaml` at load time. This means aaagent always sees the
+same filesystem no matter where it was launched from
+(local terminal, Feishu bot, systemd, CI). `~` is expanded by
+`Path.expanduser()` before the resolution step.
+
+Add new path-typed config keys to `_PATH_KEYS` in
+`aaagent.core.paths` to keep the resolution semantics uniform.
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your API keys:
