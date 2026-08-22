@@ -11,3 +11,5 @@ htmlcov/
 data/
 logs/
 .opencode/
+# Test artifacts produced by run_shell integration tests
+result.txt
