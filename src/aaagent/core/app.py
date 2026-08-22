@@ -30,6 +30,7 @@ from aaagent.core.dotenv_io import DotenvStore
 from aaagent.core.logctx import reset_context, set_context
 from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
+from aaagent.core.paths import resolve_all_paths, resolve_project_path
 from aaagent.core.plugin import (
     IMAdapter,
     PluginManager,
@@ -132,16 +133,24 @@ class Application:
         load_dotenv()
         self._config = self._load_config(config_path)
         self._config_store = ConfigStore(config_path)
-        # `.env` location: explicit override wins, otherwise default to
-        # `.env` next to config.yaml (C3 will turn this into a
-        # project-root-relative path resolution step).
-        dotenv_path = (self._config.get("paths", {}) or {}).get("dotenv")
-        if not dotenv_path:
-            cfg_p = Path(config_path)
-            dotenv_path = str(
-                (cfg_p.parent / ".env") if cfg_p.is_absolute() else Path(".env")
+        # Project root = directory containing config.yaml. All relative
+        # paths declared in config.yaml resolve against this root so
+        # behaviour does not depend on the operator's CWD.
+        cfg_p = Path(config_path)
+        self._project_root = (
+            cfg_p.resolve().parent if cfg_p.is_absolute() else Path.cwd()
+        )
+        # Rewrite known path-typed keys to absolute paths anchored at
+        # `_project_root` (paths.dotenv, memory.data_dir,
+        # tools.allowed_dirs, limits.protected_paths, ...).
+        resolve_all_paths(self._config, self._project_root)
+        # Default paths.dotenv -> <project_root>/.env when unset, so
+        # the dotenv store ends up next to config.yaml by default.
+        if "dotenv" not in (self._config.get("paths", {}) or {}):
+            self._config.setdefault("paths", {})["dotenv"] = str(
+                self._project_root / ".env"
             )
-        self._dotenv = DotenvStore(dotenv_path)
+        self._dotenv = DotenvStore(self._config["paths"]["dotenv"])
         self._bus = bus if bus is not None else EventBus()
 
         # Plugin discovery (loads builtin + entry_points + config overrides)
@@ -233,18 +242,25 @@ class Application:
         tools_cfg = self._config.get("tools", {})
         allowed_dirs = tools_cfg.get("allowed_dirs", None)
         if allowed_dirs is None:
-            allowed_dirs = [str(Path.cwd())]
+            # Default to the project root so `tools.allowed_dirs` is
+            # implicit but explicit: same scope whether aaagent was
+            # launched from project root or from anywhere else.
+            allowed_dirs = [str(self._project_root)]
         else:
             validated: list[str] = []
             for d in allowed_dirs:
-                p = Path(d).resolve()
+                # Re-resolve in case resolve_all_paths missed it (e.g.
+                # absolute paths from the operator).
+                p = resolve_project_path(d, self._project_root)
                 if not p.exists():
                     logger.warning("allowed_dirs entry does not exist, skipped: %s", d)
                     continue
                 validated.append(str(p))
             if not validated:
-                logger.warning("No valid allowed_dirs after validation; defaulting to cwd")
-                validated = [str(Path.cwd())]
+                logger.warning(
+                    "No valid allowed_dirs after validation; defaulting to project root"
+                )
+                validated = [str(self._project_root)]
             allowed_dirs = validated
 
         registry = ToolRegistry(allowed_dirs=allowed_dirs)
