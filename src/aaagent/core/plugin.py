@@ -116,6 +116,12 @@ ADAPTER_GROUP = "aaagent.adapters"
 SESSION_GROUP = "aaagent.sessions"
 MEMORY_GROUP = "aaagent.memories"
 COMMAND_GROUP = "aaagent.commands"
+# Plugins that contribute top-level `aaagent <name>` Typer subcommands
+# (e.g. `aaagent-plugin-web` provides `aaagent web`). Each entry-point
+# value is a callable `(typer_app: typer.Typer, config_path: str) -> None`
+# that registers its subcommands on the supplied Typer app. Discovery
+# happens once, at startup, from `cli.py`.
+CLI_COMMAND_GROUP = "aaagent.cli_commands"
 
 
 class PluginNotFoundError(LookupError):
@@ -298,6 +304,12 @@ class PluginManager:
         self._session_factories: dict[str, SessionStoreFactory] = {}
         self._memory_factories: dict[str, MemoryStoreFactory] = {}
         self._command_registrars: dict[str, Callable[[Any], None]] = {}
+        # `aaagent.cli_commands` registrars. Each entry-point value is a
+        # callable `(typer_app, config_path) -> None` that registers
+        # one or more top-level Typer subcommands on the supplied app.
+        # The CLI loads these at startup, AFTER the built-in commands,
+        # so plugin commands can extend the default surface.
+        self._cli_command_registrars: dict[str, Callable[[Any, str], None]] = {}
 
     def load(self) -> None:
         self._load_entry_points()
@@ -314,6 +326,7 @@ class PluginManager:
             SESSION_GROUP,
             MEMORY_GROUP,
             COMMAND_GROUP,
+            CLI_COMMAND_GROUP,
         )
         for group in groups:
             try:
@@ -371,6 +384,8 @@ class PluginManager:
             self._memory_factories[name] = cls() if isinstance(cls, type) else cls
         elif group == COMMAND_GROUP:
             self._command_registrars[name] = cls  # type: ignore[assignment]
+        elif group == CLI_COMMAND_GROUP:
+            self._cli_command_registrars[name] = cls  # type: ignore[assignment]
 
     def _validate_all(self) -> None:
         for type_name, cls in self._provider_classes.items():
@@ -451,6 +466,18 @@ class PluginManager:
         """
         return dict(self._command_registrars)
 
+    def get_cli_command_registrars(self) -> dict[str, Callable[[Any, str], None]]:
+        """Return the loaded top-level-CLI registrars keyed by name.
+
+        Each value is a callable `(typer_app, config_path) -> None` that
+        registers one or more `aaagent <name>` Typer subcommands on the
+        supplied app. Plugins that ship top-level CLI commands (e.g.
+        `aaagent-plugin-web` provides `aaagent web`) expose a function
+        in the `aaagent.cli_commands` entry-point group; `cli.py` calls
+        them at startup, after the built-in commands are registered.
+        """
+        return dict(self._cli_command_registrars)
+
     @property
     def loaded(self) -> dict[str, list[str]]:
         return {
@@ -459,4 +486,5 @@ class PluginManager:
             "adapters": sorted(self._adapter_classes),
             "sessions": sorted(self._session_factories),
             "memories": sorted(self._memory_factories),
+            "cli_commands": sorted(self._cli_command_registrars),
         }

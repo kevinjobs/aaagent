@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Frontend build cache (re-installed per environment).
+web/node_modules/
+
+# Frontend dev cache (created by vite / npm run dev).
+web/.vite/
+web/dist/.vite/
+
+# Keep the built SPA — `web/dist/` is intentionally committed so
+# end users can `pip install aaagent-plugin-web` and use `aaagent web`
+# without needing npm.
+!web/dist/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

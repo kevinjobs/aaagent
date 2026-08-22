@@ -1,0 +1,200 @@
+/*
+ * Design tokens lifted from DeepSeek Harness's `_boot_*` CSS variables
+ * (dsh-web-frontend/dist/assets/index-C6eRlFa6.css) and translated
+ * into the shadcn/ui CSS-variable schema. The mapping is one-shot:
+ * if DSH ever ships a palette update, edit only this file.
+ *
+ *   DSH token                  shadcn slot
+ *   ──────────────────────────────────────────────
+ *   --dsh-boot-bg              --background
+ *   --dsh-boot-label-primary   --foreground / --primary-foreground
+ *   --dsh-boot-label-secondary --muted-foreground
+ *   --dsh-boot-label-tertiary  --muted-foreground (lighter)
+ *   --dsh-boot-border          --border
+ *   --dsh-boot-brand           --primary
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 220 13% 6%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 220 13% 6%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 220 13% 6%;
+
+  --primary: 220 13% 6%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 220 13% 95%;
+  --secondary-foreground: 220 13% 6%;
+
+  --muted: 220 13% 96%;
+  --muted-foreground: 220 5% 43%;
+
+  --accent: 220 13% 96%;
+  --accent-foreground: 220 13% 6%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 0 0% 0% / 0.10;
+  --input: 0 0% 0% / 0.10;
+  --ring: 220 13% 6%;
+
+  --radius: 12px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
+               "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
+               "Liberation Mono", Menlo, Courier, monospace;
+}
+
+[data-theme="dark"],
+:root.dark {
+  --background: 240 4% 9%;
+  --foreground: 220 14% 96%;
+
+  --card: 240 4% 11%;
+  --card-foreground: 220 14% 96%;
+
+  --popover: 240 4% 11%;
+  --popover-foreground: 220 14% 96%;
+
+  --primary: 220 14% 96%;
+  --primary-foreground: 240 4% 9%;
+
+  --secondary: 240 4% 14%;
+  --secondary-foreground: 220 14% 96%;
+
+  --muted: 240 4% 14%;
+  --muted-foreground: 220 5% 73%;
+
+  --accent: 240 4% 14%;
+  --accent-foreground: 220 14% 96%;
+
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 220 14% 96%;
+
+  --border: 0 0% 100% / 0.12;
+  --input: 0 0% 100% / 0.12;
+  --ring: 220 14% 96%;
+}
+
+/* Respect OS preference when no explicit data-theme is set. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --background: 240 4% 9%;
+    --foreground: 220 14% 96%;
+    --card: 240 4% 11%;
+    --card-foreground: 220 14% 96%;
+    --popover: 240 4% 11%;
+    --popover-foreground: 220 14% 96%;
+    --primary: 220 14% 96%;
+    --primary-foreground: 240 4% 9%;
+    --secondary: 240 4% 14%;
+    --secondary-foreground: 220 14% 96%;
+    --muted: 240 4% 14%;
+    --muted-foreground: 220 5% 73%;
+    --accent: 240 4% 14%;
+    --accent-foreground: 220 14% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 220 14% 96%;
+    --border: 0 0% 100% / 0.12;
+    --input: 0 0% 100% / 0.12;
+    --ring: 220 14% 96%;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
+
+/* highlight.js token palette kept neutral so light + dark both look
+ * clean without theme-specific overrides. */
+.hljs {
+  background: transparent;
+  color: inherit;
+}
+.hljs-comment,
+.hljs-quote {
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-link {
+  color: hsl(220 70% 50%);
+}
+[data-theme="dark"] .hljs-keyword,
+[data-theme="dark"] .hljs-selector-tag,
+[data-theme="dark"] .hljs-literal,
+[data-theme="dark"] .hljs-section,
+[data-theme="dark"] .hljs-link {
+  color: hsl(220 90% 70%);
+}
+.hljs-string,
+.hljs-title,
+.hljs-name,
+.hljs-type,
+.hljs-attribute,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-built_in,
+.hljs-addition,
+.hljs-variable,
+.hljs-template-tag,
+.hljs-template-variable {
+  color: hsl(140 50% 40%);
+}
+[data-theme="dark"] .hljs-string,
+[data-theme="dark"] .hljs-title,
+[data-theme="dark"] .hljs-name,
+[data-theme="dark"] .hljs-type,
+[data-theme="dark"] .hljs-attribute,
+[data-theme="dark"] .hljs-symbol,
+[data-theme="dark"] .hljs-bullet,
+[data-theme="dark"] .hljs-built_in,
+[data-theme="dark"] .hljs-addition,
+[data-theme="dark"] .hljs-variable,
+[data-theme="dark"] .hljs-template-tag,
+[data-theme="dark"] .hljs-template-variable {
+  color: hsl(140 50% 65%);
+}
+.hljs-number,
+.hljs-regexp {
+  color: hsl(280 60% 45%);
+}
+[data-theme="dark"] .hljs-number,
+[data-theme="dark"] .hljs-regexp {
+  color: hsl(280 70% 70%);
+}
+.hljs-deletion {
+  color: hsl(var(--destructive));
+}

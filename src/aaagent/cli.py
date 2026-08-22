@@ -6,9 +6,11 @@ import re
 from pathlib import Path
 
 import typer
+import yaml
 
 from aaagent.core.app import Application
 from aaagent.core.logctx import ContextFilter
+from aaagent.core.plugin import CLI_COMMAND_GROUP, PluginManager
 
 app = typer.Typer(name="aaagent", help="A pluggable IM + LLM agent framework")
 
@@ -58,7 +60,6 @@ def _run_application(application: Application) -> None:
 
 def _read_log_level(config_path: str) -> str:
     try:
-        import yaml
         p = Path(config_path)
         if p.exists():
             with open(p, encoding="utf-8") as f:
@@ -67,6 +68,61 @@ def _read_log_level(config_path: str) -> str:
     except Exception:
         pass
     return "INFO"
+
+
+def _read_config(config_path: str) -> dict:
+    """Best-effort config load used by CLI commands that need it before
+    the full Application is constructed (e.g. to discover the plugin
+    set, surface a helpful error if config is missing, ...).
+
+    Returns an empty dict if the file is missing or unreadable. The
+    full Application does its own strict loading later.
+    """
+    try:
+        p = Path(config_path)
+        if p.exists():
+            with open(p, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _load_cli_commands(config_path: str) -> None:
+    """Discover and register top-level `aaagent <name>` subcommands from
+    the `aaagent.cli_commands` entry-point group.
+
+    Done eagerly at CLI import time so plugins can extend the surface
+    simply by being installed (no separate registration step). Plugin
+    registrars are called with `(typer_app, config_path)` and may add
+    one or more subcommands; failures are logged but don't abort the
+    CLI — the core built-ins still work.
+    """
+    cfg = _read_config(config_path)
+    pm = PluginManager(cfg)
+    # Only need the CLI-command registrars — skip provider/tool/adapter
+    # validation that the full Application would do.
+    pm._load_entry_points()
+    for name, registrar in pm.get_cli_command_registrars().items():
+        try:
+            registrar(app, config_path)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "CLI command registrar '%s' (group %s) failed to register",
+                name,
+                CLI_COMMAND_GROUP,
+            )
+
+
+# Eagerly load plugin-supplied CLI commands at import time. This makes
+# `aaagent web`, `aaagent foo`, etc. discoverable through Typer just
+# like the built-in `run` / `chat`. The default config path is
+# `config.yaml`; the `AAAGENT_CONFIG` env var (read by the CLI later)
+# can override it. We pass the same default here so `--help` reflects
+# the actual surface.
+import os as _os  # noqa: E402
+
+_load_cli_commands(_os.environ.get("AAAGENT_CONFIG", "config.yaml"))
 
 
 @app.command()

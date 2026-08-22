@@ -2,6 +2,59 @@
 
 ## 0.4.5 - Unreleased
 
+### New plugin: `aaagent-plugin-web` (browser chat UI)
+
+After `pip install aaagent-plugin-web`, a new top-level CLI command
+becomes available:
+
+    aaagent web [--port 8848] [--host 127.0.0.1] [--open/--no-open]
+
+It boots the aaagent Application together with a `WebAdapter`
+(based on `IMAdapter`) and a FastAPI server that:
+
+* Serves the bundled React SPA (DSH-inspired palette, shadcn/ui
+  components) from `web/dist/`.
+* Exposes a WebSocket at `/api/ws` that fans the existing EventBus
+  events (`message_to_send`, `stream_token`, `tool_start`,
+  `tool_result`, `slash_*`) to every connected browser tab.
+* Falls back to a clear "Frontend not built" page when the
+  Vite-built assets are missing (so users without npm can still
+  use the WebSocket directly via `wscat`).
+
+How `aaagent web` hooks in:
+
+* Core: new `aaagent.cli_commands` entry-point group + tiny CLI
+  loader. Plugins that want to add a top-level Typer subcommand
+  just expose a `(typer_app, config_path) -> None` function.
+  No core logic changes; `Application` / `EventBus` /
+  `IMAdapter` are untouched.
+* Plugin: registers both `aaagent.adapters:web` and
+  `aaagent.cli_commands:web` entry points; new `WebAdapter`
+  subscribes to the same bus events the CLI adapter already
+  knows about, plus a `/api/ws` handler in `server.py`.
+
+Bundled frontend (under `plugins/aaagent-plugin-web/web/`):
+
+* React 18 + TypeScript + Vite + Tailwind + shadcn/ui.
+* Auto-reconnecting WebSocket with a 30 s keep-alive ping.
+* Markdown + GFM + syntax highlighting via `react-markdown` /
+  `rehype-highlight`.
+* Light/dark theme that follows OS preference and can be
+  toggled in the header (state persisted to localStorage).
+* Tool-call trace as inline cards (collapse/expand), one per
+  `tool_start`/`tool_result` pair.
+
+Tests:
+
+* 2 new core tests in `test_plugin.py` for CLI-command discovery.
+* 8 new plugin tests in `plugins/aaagent-plugin-web/tests/`
+  covering: message_to_send fan-out, platform filtering,
+  inbound → bus translation, slash command translation, health
+  endpoint, fallback-page render, WebSocket round-trip end-to-end,
+  ping/pong heartbeat.
+
+Test status: 362 passed / 1 skipped / 0 failed.
+
 ### Fix: pin the active LLM provider for tool turns in the same message
 
 Cross-provider `tool_call_id`s are not portable — each provider mints
