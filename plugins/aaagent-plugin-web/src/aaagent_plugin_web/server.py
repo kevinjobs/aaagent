@@ -85,11 +85,20 @@ def _find_dist_dir() -> Path | None:
     return None
 
 
-def build_app(adapter: "WebAdapter", dist_dir: Path | None = None) -> FastAPI:
+def build_app(
+    adapter: "WebAdapter",
+    dist_dir: Path | None = None,
+    application: object | None = None,
+) -> FastAPI:
     """Construct the FastAPI app wired to the given adapter.
 
     The adapter owns the EventBus subscription; the server only
     handles the WebSocket ↔ adapter bridge and static asset serving.
+
+    `application` (optional) is the `Application` instance that owns
+    the session store. When provided, the server exposes a small REST
+    API for the frontend to load historical messages — otherwise the
+    SPA has no way to hydrate after a browser refresh.
     """
     app = FastAPI(
         title="aaagent web",
@@ -105,9 +114,99 @@ def build_app(adapter: "WebAdapter", dist_dir: Path | None = None) -> FastAPI:
                 "status": "ok",
                 "platform": "web",
                 "connections": len(adapter._pushers),
+                "default_session": adapter._session_id,
             }
         )
 
+    # ---- REST endpoints to hydrate the SPA after a browser refresh. ----
+    # The frontend has no durable storage of its own; all messages live
+    # in the application's session store. On mount (and after a
+    # /slash reset) it calls these endpoints to restore state.
+
+    @app.get("/api/sessions", include_in_schema=False)
+    async def list_sessions() -> JSONResponse:
+        if application is None or not hasattr(application, "_session_store"):
+            return JSONResponse({"sessions": []})
+        try:
+            sessions = application._session_store.list_sessions()
+        except Exception:  # noqa: BLE001
+            logger.exception("web: list_sessions failed")
+            return JSONResponse({"sessions": []})
+        return JSONResponse(
+            {
+                "sessions": [
+                    {
+                        "id": s.id,
+                        "platform": getattr(s, "platform", ""),
+                        "chat_id": getattr(s, "chat_id", ""),
+                        "message_count": len(s.messages),
+                        "last_activity": getattr(s, "last_activity", 0.0),
+                    }
+                    for s in sessions
+                ]
+            }
+        )
+
+    @app.get("/api/session/messages", include_in_schema=False)
+    async def session_messages(session_id: str = "") -> JSONResponse:
+        """Return all messages for a given session.
+
+        If `session_id` is empty (default), the adapter's
+        `default_session_id` is used — the same session the web UI
+        will send new messages into.
+
+        The frontend expects each message as `{role, content,
+        created_at}` so it can map into `ChatItem[]` and hydrate the
+        reducer on mount.
+        """
+        try:
+            sid = session_id or adapter._session_id
+            if application is None or not hasattr(application, "_session_store"):
+                return JSONResponse(
+                    {"session_id": sid, "messages": [], "summary": None}
+                )
+            store = application._session_store
+            try:
+                # Bypass per-session locking. `get_session()` internally
+                # takes a lock created in the *Application's* asyncio loop;
+                # we run in uvicorn's loop, so a cross-loop lock acquire
+                # raises `RuntimeError`. The store's `list_sessions()` is
+                # lock-free (it only reads `self._sessions.values()`) and
+                # is safe from our loop.
+                session = next(
+                    (s for s in store.list_sessions() if s.id == sid), None
+                )
+                if session is None:
+                    return JSONResponse(
+                        {"session_id": sid, "messages": [], "summary": None}
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("web: get_session(%s) failed", sid)
+                return JSONResponse(
+                    {"session_id": sid, "messages": [], "summary": None}
+                )
+            messages = [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": getattr(m, "created_at", 0.0),
+                }
+                for m in session.messages
+            ]
+            return JSONResponse(
+                {
+                    "session_id": session.id,
+                    "summary": getattr(session, "summary", None),
+                    "messages": messages,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("web: session_messages crashed")
+            return JSONResponse(
+                {"session_id": sid, "messages": [], "summary": None}
+            )
+
+    # ---- WebSocket endpoint ----
     @app.websocket("/api/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
         await ws.accept()
@@ -193,6 +292,7 @@ def serve(
     port: int = 8848,
     log_level: str = "info",
     dist_dir: Path | None = None,
+    application: object | None = None,
 ) -> None:
     """Start uvicorn in the foreground. Blocks until interrupted.
 
@@ -200,7 +300,7 @@ def serve(
     thread so that `Application.run()` (which holds the asyncio loop)
     and uvicorn (which wants its own) can coexist.
     """
-    app = build_app(adapter, dist_dir=dist_dir)
+    app = build_app(adapter, dist_dir=dist_dir, application=application)
     config = uvicorn.Config(
         app,
         host=host,

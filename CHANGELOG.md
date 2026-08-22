@@ -53,7 +53,7 @@ Tests:
   endpoint, fallback-page render, WebSocket round-trip end-to-end,
   ping/pong heartbeat.
 
-Test status: 368 passed / 1 skipped / 0 failed.
+Test status: 374 passed / 1 skipped / 0 failed.
 
 Bug fixes discovered during QA (in the same commit):
 
@@ -112,6 +112,43 @@ inner scroller becomes the only overflowing element. Header stays
 pinned at the top, Composer stays pinned at the bottom (textarea
 max-height 240 px). The page itself never overflows; only the
 scroller rolls.
+
+### Fix: SPA refreshes preserve chat history
+
+The frontend reducer is ephemeral — every browser refresh resets
+`items` to `[]`. The backend session store kept the messages, but
+the SPA had no way to read them.
+
+Fix: two new REST endpoints on the web server:
+
+* `GET /api/session/messages?session_id=...` returns every stored
+  message for the session (`{role, content, created_at}`) plus the
+  session summary. If `session_id` is omitted, the adapter's
+  `default_session_id` is used — the same session the SPA sends
+  new messages into.
+* `GET /api/sessions` returns a list of session metadata (id,
+  platform, chat_id, message_count, last_activity) for a future
+  session-switcher UI.
+
+The SPA calls `GET /api/session/messages` on mount and dispatches
+`hydrate` into the reducer, so after a refresh the local `items`
+matches the backend truth exactly.
+
+The endpoint reads the store via `list_sessions()` rather than
+`get_session(session_id)` to avoid a cross-loop `asyncio.Lock`
+`RuntimeError`: the per-session lock is created in the Application's
+asyncio loop but the REST endpoint runs in uvicorn's loop.
+
+Six new tests in `plugins/aaagent-plugin-web/tests/`:
+`test_session_messages_endpoint_returns_stored_messages`,
+`test_session_messages_defaults_to_adapter_default_session`,
+`test_session_messages_returns_empty_for_missing_session`,
+`test_session_messages_without_application_returns_empty`,
+`test_sessions_list_endpoint_returns_all_sessions`,
+`test_health_endpoint_reports_default_session`.
+
+Test status: 374 passed / 1 skipped / 0 failed / 0 warnings.
+Frontend bundle: `index-CZ-UJpE2.js` (was `index-1LCUFNgl.js`).
 
 ### Fix: pin the active LLM provider for tool turns in the same message
 

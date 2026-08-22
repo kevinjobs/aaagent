@@ -130,9 +130,10 @@ def _run_web(config_path: str, host: str, port: int, open_browser: bool) -> None
     application.add_adapter(web_adapter)
 
     # Build the FastAPI app now (eagerly, so any wiring errors
-    # surface before uvicorn starts).
+    # surface before uvicorn starts). Passing `application` wires
+    # the REST session-endpoints so the SPA can hydrate on refresh.
     dist_dir = _resolve_dist_dir()
-    _ = build_app(web_adapter, dist_dir=dist_dir)
+    _ = build_app(web_adapter, dist_dir=dist_dir, application=application)
 
     # Start uvicorn in a background thread so the Application's main
     # loop can own its asyncio loop. The thread is a daemon so a
@@ -141,7 +142,13 @@ def _run_web(config_path: str, host: str, port: int, open_browser: bool) -> None
 
     def _run_server() -> None:
         try:
-            serve(web_adapter, host=host, port=port, dist_dir=dist_dir)
+            serve(
+                web_adapter,
+                host=host,
+                port=port,
+                dist_dir=dist_dir,
+                application=application,
+            )
         except Exception:  # noqa: BLE001
             logger.exception("uvicorn thread crashed")
 

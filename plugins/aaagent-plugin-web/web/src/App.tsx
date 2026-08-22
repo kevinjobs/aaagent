@@ -32,6 +32,7 @@ type Action =
   | { type: "slash_reply"; reply: string }
   | { type: "slash_unknown"; text: string; command?: string }
   | { type: "slash_session_switch"; new_session: string | null }
+  | { type: "hydrate"; items: ChatItem[] }
   | { type: "reset" };
 
 const initialState: State = { items: [], streaming: false };
@@ -211,6 +212,15 @@ function reducer(state: State, action: Action): State {
       };
     case "reset":
       return initialState;
+    case "hydrate":
+      // Replace local items with the historical messages fetched from
+      // the backend. All hydrated messages are final (non-streaming);
+      // we don't need to preserve any in-flight streaming state.
+      return {
+        ...state,
+        items: action.items,
+        streaming: false,
+      };
   }
 }
 
@@ -297,6 +307,62 @@ export default function App() {
     const unsubscribe = onFrame(handler);
     return unsubscribe;
   }, [onFrame]);
+
+  // ---- Hydrate chat history on mount from the backend session store.
+  //
+  // The frontend has no durable storage of its own — every time the
+  // browser refreshes the local `items` reducer is reset. We fetch
+  // the default session's messages from `/api/session/messages` and
+  // hydrate the reducer so the conversation feels continuous across
+  // refreshes.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/session/messages");
+        if (!res.ok) {
+          // Session not yet created (first visit) is expected — don't
+          // log as error. Anything else is a server problem.
+          if (res.status !== 404) {
+            console.warn(`aaagent: /api/session/messages returned ${res.status}`);
+          }
+          return;
+        }
+        const data = (await res.json()) as { messages: Array<{ role: string; content: string }> };
+        if (cancelled) return;
+
+        const items: ChatItem[] = (data.messages ?? [])
+          .map((m) => {
+            const role =
+              m.role === "user" ||
+              m.role === "assistant" ||
+              m.role === "tool" ||
+              m.role === "system"
+                ? (m.role as ChatItem["role"])
+                : "system";
+            return {
+              id: `h-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              role,
+              content: m.content ?? "",
+            };
+          })
+          .filter(Boolean);
+
+        if (items.length > 0) {
+          dispatch({ type: "hydrate", items });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("aaagent: failed to load session history", err);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const toggleTheme = useCallback(() => {
     setTheme((cur) => {

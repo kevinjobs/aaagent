@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from aaagent.core.bus import EventBus
 from aaagent.core.message import Message
+from aaagent_plugin_inmemorysession import InMemorySessionStore
 from aaagent_plugin_web.adapter import WebAdapter
 from aaagent_plugin_web.server import build_app
 
@@ -309,3 +310,159 @@ def test_websocket_rejects_malformed_json_frame():
             ws.send_text("not-json-at-all")
             # Server should close with 1003.
             ws.receive_text()
+
+
+# ---------- /api/session/messages: SPA hydration on refresh ----------
+
+
+def _fake_app_with_store() -> tuple[TestClient, "object"]:
+    """Build an app with a fake Application whose `_session_store` is
+    seeded with one session. This lets us test the REST hydration
+    endpoint without pulling in the full Application.
+    """
+    store = InMemorySessionStore(max_history=20)
+
+    class FakeApp:
+        _session_store = store
+
+    adapter = WebAdapter({"default_session_id": "web-foo"}, EventBus())
+    app = build_app(adapter, application=FakeApp)
+
+    return TestClient(app), store
+
+
+@pytest.mark.asyncio
+async def test_session_messages_endpoint_returns_stored_messages():
+    """The SPA calls `GET /api/session/messages` on mount to hydrate
+    after a browser refresh. It must return every message from the
+    default session so the local `items` reducer matches the
+    backend's truth."""
+    client, store = _fake_app_with_store()
+
+    # Seed two messages (user + assistant) into the default session.
+    await store.add_message(
+        "web-foo",
+        Message(
+            session_id="web-foo",
+            platform="web",
+            chat_id="c1",
+            user_id="u1",
+            content="hi",
+            role="user",
+        ),
+    )
+    await store.add_message(
+        "web-foo",
+        Message(
+            session_id="web-foo",
+            platform="web",
+            chat_id="c1",
+            user_id="u1",
+            content="hello back",
+            role="assistant",
+        ),
+    )
+
+    resp = client.get("/api/session/messages")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == "web-foo"
+    assert len(data["messages"]) == 2
+    assert data["messages"][0]["role"] == "user"
+    assert data["messages"][0]["content"] == "hi"
+    assert data["messages"][1]["role"] == "assistant"
+    assert data["messages"][1]["content"] == "hello back"
+
+
+@pytest.mark.asyncio
+async def test_session_messages_defaults_to_adapter_default_session():
+    """When the SPA doesn't specify a session_id (its default case),
+    the endpoint must look up the adapter's `default_session_id` —
+    which is the same session the frontend sends new messages into.
+    """
+    client, store = _fake_app_with_store()
+    await store.add_message(
+        "web-foo",
+        Message(
+            session_id="web-foo",
+            platform="web",
+            chat_id="c1",
+            user_id="u1",
+            content="default session msg",
+            role="assistant",
+        ),
+    )
+    # No `session_id` query param — must resolve to adapter's default.
+    resp = client.get("/api/session/messages")
+    data = resp.json()
+    assert data["session_id"] == "web-foo"
+    assert data["messages"][0]["content"] == "default session msg"
+
+
+@pytest.mark.asyncio
+async def test_session_messages_returns_empty_for_missing_session():
+    """A session_id the store doesn't know about must return an empty
+    list (200, not 404) so the frontend can safely render an empty
+    chat without special-casing errors."""
+    client, _ = _fake_app_with_store()
+    resp = client.get("/api/session/messages?session_id=nonexistent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == "nonexistent"
+    assert data["messages"] == []
+
+
+def test_session_messages_without_application_returns_empty():
+    """If the FastAPI app is built without an Application reference
+    (server.py `application=None`), the endpoint must not crash. It
+    returns an empty payload so the SPA stays working when the
+    REST APIs are unavailable."""
+    adapter = WebAdapter({"default_session_id": "x"}, EventBus())
+    client = TestClient(build_app(adapter, application=None))
+    resp = client.get("/api/session/messages")
+    assert resp.status_code == 200
+    assert resp.json()["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_sessions_list_endpoint_returns_all_sessions():
+    """`GET /api/sessions` lists every stored session so the SPA can
+    (in future) offer a session switcher. It must return metadata
+    only — never the message contents."""
+    client, store = _fake_app_with_store()
+
+    for sid, role in [
+        ("web-foo", "assistant"),
+        ("web-bar", "assistant"),
+    ]:
+        await store.add_message(
+            sid,
+            Message(
+                session_id=sid,
+                platform="web",
+                chat_id="c1",
+                user_id="u1",
+                content=f"msg in {sid}",
+                role=role,
+            ),
+        )
+
+    resp = client.get("/api/sessions")
+    assert resp.status_code == 200
+    data = resp.json()
+    ids = {s["id"] for s in data["sessions"]}
+    assert "web-foo" in ids
+    assert "web-bar" in ids
+    # No `messages` key on any entry.
+    assert all("messages" not in s for s in data["sessions"])
+
+
+def test_health_endpoint_reports_default_session():
+    """`/api/health` must include `default_session` so a client can
+    confirm which session it will talk to without guessing."""
+    adapter = WebAdapter({"default_session_id": "web-custom"}, EventBus())
+    client = TestClient(build_app(adapter))
+    resp = client.get("/api/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["default_session"] == "web-custom"
