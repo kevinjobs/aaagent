@@ -26,6 +26,7 @@ from aaagent.core.commands import (
     register_builtins,
 )
 from aaagent.core.config_io import ConfigStore
+from aaagent.core.dotenv_io import DotenvStore
 from aaagent.core.logctx import reset_context, set_context
 from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
@@ -131,6 +132,16 @@ class Application:
         load_dotenv()
         self._config = self._load_config(config_path)
         self._config_store = ConfigStore(config_path)
+        # `.env` location: explicit override wins, otherwise default to
+        # `.env` next to config.yaml (C3 will turn this into a
+        # project-root-relative path resolution step).
+        dotenv_path = (self._config.get("paths", {}) or {}).get("dotenv")
+        if not dotenv_path:
+            cfg_p = Path(config_path)
+            dotenv_path = str(
+                (cfg_p.parent / ".env") if cfg_p.is_absolute() else Path(".env")
+            )
+        self._dotenv = DotenvStore(dotenv_path)
         self._bus = bus if bus is not None else EventBus()
 
         # Plugin discovery (loads builtin + entry_points + config overrides)

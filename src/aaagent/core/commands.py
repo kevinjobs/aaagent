@@ -16,10 +16,15 @@ disk writes for /model persistence, etc.) without blocking the bus.
 
 from __future__ import annotations
 
+import logging
+import os
+import re
 import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable
+
+logger = logging.getLogger("aaagent.commands")
 
 
 @dataclass
@@ -332,6 +337,61 @@ def _models_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
     return _h()
 
 
+def _derive_env_name(provider: str) -> str:
+    """Turn a provider name into a `${...}_API_KEY` env-var identifier.
+
+    Provider names that contain non `[A-Za-z0-9_]` characters are
+    normalised by replacing such characters with `_`. Leading digits are
+    preserved (shell allows env-var names like `9ROUTER_API_KEY` even
+    though Python identifiers don't).
+    """
+    normalized = re.sub(r"[^A-Za-z0-9_]", "_", provider).upper()
+    if not normalized:
+        raise ValueError(f"cannot derive env-var name from {provider!r}")
+    return f"{normalized}_API_KEY"
+
+
+def _providers_sharing_env(cfg: dict, env_name: str) -> list[str]:
+    """List every provider entry that references `${env_name}`.
+
+    Used by `/model -new --key` to warn the operator when an overwrite
+    will affect more than the targeted provider (D2).
+    """
+    ref = "${" + env_name + "}"
+    out: list[str] = []
+    providers = cfg.get("providers", {}) or {}
+    for name, body in providers.items():
+        if name == "_meta":
+            continue
+        if isinstance(body, dict) and body.get("api_key") == ref:
+            out.append(name)
+    return out
+
+
+def _persist_api_key(app: Any, pname: str, key: str) -> tuple[str, str, list[str]]:
+    """Write `key` to `.env` and update the in-process env so the new
+    value is visible to the provider's next instantiation.
+
+    Returns `(env_name, dotenv_result, shared_providers)`. The caller
+    is responsible for:
+      - deciding whether to surface a WARN for `"overwrite"`
+      - rewriting `providers[pname]["api_key"]` to `"${env_name}"`
+      - calling `app._setup_providers()` to pick up the new env var
+    """
+    env_name = _derive_env_name(pname)
+    dotenv = getattr(app, "_dotenv", None)
+    if dotenv is None:
+        raise RuntimeError("DotenvStore not initialised on Application")
+    result = dotenv.set(env_name, key)
+    os.environ[env_name] = key
+    shared = _providers_sharing_env(app._config, env_name)
+    logger.info(
+        "/model key update: provider=%s key_env=%s dotenv=%s shared=%s",
+        pname, env_name, result, ",".join(shared) or "-",
+    )
+    return env_name, result, shared
+
+
 def _model_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
     async def _h() -> SlashResult:
         app = ctx.app
@@ -346,7 +406,11 @@ def _model_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
 
         is_new = args.get("new") is True
         is_default = args.get("default") is True
-        key = args.get("key")
+        # `--key ""` (empty string) is treated as "no key change" so
+        # `/model --provider X --model Y` works the same whether the
+        # caller omits `--key` or writes `--key ""`.
+        key_arg = args.get("key")
+        key: str | None = key_arg if isinstance(key_arg, str) and key_arg else None
         base_url = args.get("base_url")
         ptype = args.get("type", "openai_compatible")
 
@@ -354,8 +418,12 @@ def _model_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
         if cfg is None:
             return SlashResult(reply="(config unavailable)")
 
+        persistence = (cfg.get("limits", {}) or {}).get("provider_persistence", "disk")
+        persist_to_disk = persistence != "memory"
+
         providers_block = cfg.setdefault("providers", {})
-        if pname in providers_block:
+        existing = pname in providers_block
+        if existing:
             providers_block[pname]["model"] = mname
             msg = f"Switched '{pname}' to model={mname}"
         else:
@@ -379,7 +447,7 @@ def _model_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
             providers_block[pname] = {
                 "type": ptype,
                 "enabled": True,
-                "api_key": key,
+                "api_key": "${_PENDING}",  # placeholder, replaced below
                 "base_url": base_url,
                 "model": mname,
             }
@@ -387,6 +455,29 @@ def _model_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
                 f"Added provider '{pname}' "
                 f"(type={ptype}, model={mname})"
             )
+
+        warn = ""
+        env_name: str | None = None
+        if key:
+            try:
+                env_name, dotenv_result, shared = _persist_api_key(
+                    app, pname, key
+                )
+            except Exception as e:  # noqa: BLE001
+                return SlashResult(
+                    reply=(
+                        f"Failed to persist API key to .env: {e}. "
+                        "Check that .env is writable."
+                    )
+                )
+            providers_block[pname]["api_key"] = "${" + env_name + "}"
+            if dotenv_result == "overwrite" and shared:
+                others = [s for s in shared if s != pname]
+                if others:
+                    warn = (
+                        f"  ⚠ overwrote {env_name}; also used by: "
+                        + ", ".join(sorted(others))
+                    )
 
         new_inst = app._instantiate_provider(
             pname, dict(providers_block[pname])
@@ -411,11 +502,22 @@ def _model_handler(arg: str, ctx: SlashContext) -> Awaitable[SlashResult]:
                 app._provider_order.remove(new_inst)
             app._provider_order.insert(0, new_inst)
 
-        try:
-            app._config_store.save(cfg)
-            msg += " [persisted to config.yaml]"
-        except Exception as e:  # noqa: BLE001
-            msg += f" [WARNING: persist failed: {e}]"
+        persisted = False
+        if persist_to_disk:
+            try:
+                app._config_store.save(cfg)
+                persisted = True
+            except Exception as e:  # noqa: BLE001
+                msg += f" [WARNING: persist failed: {e}]"
+
+        if persisted:
+            if env_name:
+                msg += f" [key→{env_name} in .env; persisted to config.yaml]"
+            else:
+                msg += " [persisted to config.yaml]"
+
+        if warn:
+            msg += warn
 
         return SlashResult(reply=msg)
 

@@ -425,12 +425,34 @@ class _FakeConfigStore:
         self.saved.append(cfg)
 
 
+class _FakeDotenv:
+    """Captures every set()/unset() call for assertion."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+        self._store: dict[str, str] = {}
+
+    def set(self, key: str, value: str) -> str:
+        existing = self._store.get(key)
+        if existing == value:
+            self.calls.append((key, value, "noop"))
+            return "noop"
+        result = "set" if existing is None else "overwrite"
+        self._store[key] = value
+        self.calls.append((key, value, result))
+        return result
+
+    def read(self, key: str) -> str | None:
+        return self._store.get(key)
+
+
 class _FakeApp:
     def __init__(
         self,
         providers_cfg: dict | None = None,
         default_provider: str = "",
         config_store: Any = None,
+        dotenv: Any = None,
     ) -> None:
         from ruamel.yaml.comments import CommentedMap
 
@@ -451,6 +473,7 @@ class _FakeApp:
         self._provider_order: list = []
         self._provider: Any = None
         self._config_store = config_store or _FakeConfigStore()
+        self._dotenv = dotenv if dotenv is not None else _FakeDotenv()
         self._provider_buckets: dict = {}
         self._instantiated: list = []
 
@@ -541,9 +564,11 @@ async def test_model_new_requires_key_and_base_url():
 @pytest.mark.asyncio
 async def test_model_new_creates_provider_and_persists():
     cfg_store = _FakeConfigStore()
+    dotenv = _FakeDotenv()
     app = _FakeApp(
         providers_cfg={"minmax": {"model": "M3"}},
         config_store=cfg_store,
+        dotenv=dotenv,
     )
     ctx = SlashContext(platform="cli", session_id="cli-x", chat_id="x", app=app)
     reg = SlashCommandRegistry()
@@ -556,8 +581,15 @@ async def test_model_new_creates_provider_and_persists():
     assert "Added provider 'foo'" in (result.reply or "")
     assert "foo" in app._providers
     assert app._providers["foo"]._model == "bar"
-    assert app._config["providers"]["foo"]["api_key"] == "sk-xyz"
+    # Key goes to .env, NOT config.yaml
+    assert app._config["providers"]["foo"]["api_key"] == "${FOO_API_KEY}"
     assert app._config["providers"]["foo"]["base_url"] == "https://api.foo.com/v1"
+    # Dotenv recorded the set
+    assert dotenv.calls == [("FOO_API_KEY", "sk-xyz", "set")]
+    assert dotenv.read("FOO_API_KEY") == "sk-xyz"
+    # os.environ updated for the next provider instantiation
+    import os as _os
+    assert _os.environ.get("FOO_API_KEY") == "sk-xyz"
     assert len(cfg_store.saved) == 1
 
 
@@ -580,6 +612,7 @@ async def test_model_new_sets_default_when_flagged():
     assert "set as default" in (result.reply or "")
     assert app._config["providers"]["_meta"]["default"] == "foo"
     assert app._provider.name == "foo"
+    assert app._config["providers"]["foo"]["api_key"] == "${FOO_API_KEY}"
 
 
 @pytest.mark.asyncio

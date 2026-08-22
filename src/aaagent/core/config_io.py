@@ -38,7 +38,7 @@ class ConfigStore:
         from ruamel.yaml import YAML
 
         if self._path.exists():
-            backup = self._path.with_suffix(self._path.suffix + ".bak")
+            backup = self._path.with_name(self._path.name + ".bak")
             shutil.copy2(self._path, backup)
 
         yaml = YAML(typ="rt")
@@ -47,7 +47,7 @@ class ConfigStore:
         yaml.indent(mapping=2, sequence=4, offset=2)
         yaml.width = 4096
 
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        tmp = self._path.with_name(self._path.name + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             yaml.dump(cfg, f)
         os.replace(tmp, self._path)
