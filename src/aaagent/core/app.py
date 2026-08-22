@@ -25,6 +25,7 @@ from aaagent.core.commands import (
     SlashResult,
     register_builtins,
 )
+from aaagent.core.config_io import ConfigStore
 from aaagent.core.logctx import reset_context, set_context
 from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
@@ -141,6 +142,7 @@ class Application:
         from dotenv import load_dotenv
         load_dotenv()
         self._config = self._load_config(config_path)
+        self._config_store = ConfigStore(config_path)
         self._bus = bus if bus is not None else EventBus()
 
         # Plugin discovery (loads builtin + entry_points + config overrides)
@@ -479,7 +481,7 @@ class Application:
             chat_id=chat_id,
             app=self,
         )
-        result: SlashResult = self._commands.handle(
+        result: SlashResult = await self._commands.handle(
             text, ctx, blacklist=self._slash_blacklist(platform)
         )
 

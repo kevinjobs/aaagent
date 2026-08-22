@@ -8,6 +8,23 @@
   bus event for lines starting with `/`; core routes through the
   registry and emits `slash_reply`, `slash_quit`,
   `slash_session_switch`, `slash_unknown` for adapters to act on.
+- Handler protocol switched to `async` so commands can do real I/O
+  (provider calls, disk writes).
+- New built-ins:
+  - `/compact` — force-compress the current session, summarising older
+    messages via the active provider (`Session.force_compress`).
+  - `/model --provider X --model Y [-new --key K --base-url U]
+    [-default]` — switch the active provider+model, optionally create
+    a brand-new provider entry and/or make it the default. `-new`
+    requires both `--key` and `--base-url`.
+  - `/models` — list all providers with their current model and type,
+    marking the active one with `*` and the default with `(default)`.
+- `/model` writes changes back to `config.yaml` via
+  `aaagent.core.config_io.ConfigStore` (ruamel.yaml round-trip —
+  comments and ordering are preserved; previous file is copied to
+  `config.yaml.bak` before each save). Persistence failure is surfaced
+  in the reply but does not roll back the in-memory change.
+- New dependency: `ruamel.yaml>=0.18` (round-trip YAML).
 - Built-ins: `/help`, `/quit`, `/session`, `/sessions`. The redundant
   `/exit` alias was removed (use `/quit`).
 - `/session` with no args now starts a brand-new session (auto-id like

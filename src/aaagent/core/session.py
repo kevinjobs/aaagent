@@ -58,6 +58,44 @@ class Session:
         self.messages = self.messages[len(old) :]
         self.last_activity = time.time()
 
+    async def force_compress(self, provider) -> bool:
+        """Force a summary pass regardless of threshold.
+
+        Same logic as `compress()` but skips the `len(messages) <= max_history`
+        early-exit. Returns True if a summary was produced, False if there
+        wasn't enough content to compress.
+        """
+        if len(self.messages) < 2:
+            return False
+
+        keep = self.keep_after_compress
+        if len(self.messages) - keep <= 0:
+            keep = max(1, len(self.messages) // 2)
+        old = self.messages[: len(self.messages) - keep]
+        if not old:
+            return False
+
+        text_messages = [m for m in old if not self._is_tool_message(m)]
+        if not text_messages:
+            self.messages = self.messages[len(old):]
+            self.last_activity = time.time()
+            return False
+
+        conversation = "\n".join(
+            f"{m.role}: {m.content}" for m in text_messages
+        )
+        existing = f"之前的对话摘要：{self.summary}\n\n" if self.summary else ""
+        prompt = (
+            f"{existing}请将以下对话历史总结为一段简洁的摘要，"
+            f"保留关键信息和上下文：\n\n{conversation}"
+        )
+        self.summary = await provider.chat(
+            [{"role": "user", "content": prompt}]
+        )
+        self.messages = self.messages[len(old):]
+        self.last_activity = time.time()
+        return True
+
     def get_context(self) -> list[dict[str, str]]:
         context: list[dict[str, str]] = []
         if self.system_prompt:

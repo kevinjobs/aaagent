@@ -304,6 +304,9 @@ python -m aaagent chat
 | `/session` | Start a new session (auto-generated id like `cli-new-143012`) |
 | `/session <name>` | Switch to session `<name>` (prefix auto-applied if missing) |
 | `/sessions` | List all known sessions (current marked with `*`) |
+| `/compact` | Force-compress the current session (summarises older messages) |
+| `/model` | Switch provider+model, optionally add new ones (see below) |
+| `/models` | List all configured providers and their models |
 | `/quit` | Exit chat |
 
 Slash commands are handled centrally by `aaagent.core.commands.SlashCommandRegistry`
@@ -312,6 +315,23 @@ support out of the box. Per-platform blacklists in `config.yaml`
 (`slash_command_blacklist.<platform>`) suppress side effects (e.g.
 `/quit` on Feishu) while still replying a friendly "this platform does
 not support that command" notice.
+
+### `/model` syntax
+
+```
+/model                                                  # show current model
+/model --provider X --model Y                           # switch on existing provider X
+/model --provider X --model Y -default                  # also make X the primary
+/model --provider X --model Y -new \
+        --key sk-xxx --base-url https://api.x.com/v1    # add new provider then switch
+/model --provider X --model Y -new --key K \
+        --base-url U -default                           # add + switch + primary
+```
+
+`-new` requires both `--key` and `--base-url`; `--type` defaults to
+`openai_compatible`. All changes are **persisted to `config.yaml`** via
+ruamel.yaml round-trip (comments and ordering preserved). The previous
+file is saved as `config.yaml.bak` before each write.
 
 ### Run mode (start all enabled IM adapters)
 

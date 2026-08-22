@@ -146,7 +146,7 @@ async def test_feishu_blacklisted_command_gets_not_supported_reply():
     reg = SlashCommandRegistry()
     register_builtins(reg)
     ctx = SlashContext(platform="feishu", session_id="feishu-x", chat_id="x")
-    result = reg.handle("/quit", ctx, blacklist={"/quit"})
+    result = await reg.handle("/quit", ctx, blacklist={"/quit"})
 
     if result.reply:
         await bus.emit(
