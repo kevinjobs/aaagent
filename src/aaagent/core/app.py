@@ -94,6 +94,15 @@ _RETRYABLE_MARKERS = (
     "timed out",
     "timeout error",
     "server disconnected",
+    # Moderation / policy blocks are deterministic on a single provider but
+    # different providers enforce different policies — falling through the
+    # fallback chain is usually the right move (e.g. MiniMax "new_sensitive"
+    # is more aggressive than DeepSeek / 9router).
+    "sensitive",
+    "unprocessable_entity",
+    "content_filter",
+    "content_policy_violation",
+    "policy_violation",
 )
 
 

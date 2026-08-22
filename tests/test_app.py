@@ -324,3 +324,69 @@ async def test_stream_or_chat_falls_back_before_first_chunk(tmp_path):
     )
     result = await app._stream_or_chat([{"role": "user", "content": "hi"}])
     assert result == "ok-backup"
+
+
+def test_is_retryable_moderation_minimax():
+    """MiniMax returns 422 'input new_sensitive (1026)' — should fall back."""
+    from aaagent.core.app import _is_retryable_provider_error
+
+    err = Exception("Error code: 422 - input new_sensitive (1026)")
+    assert _is_retryable_provider_error(err) is True
+
+
+def test_is_retryable_unprocessable_entity_generic():
+    from aaagent.core.app import _is_retryable_provider_error
+
+    err = Exception("Error code: 422 unprocessable_entity")
+    assert _is_retryable_provider_error(err) is True
+
+
+def test_is_retryable_azure_content_filter():
+    from aaagent.core.app import _is_retryable_provider_error
+
+    err = Exception("content_policy_violation triggered")
+    assert _is_retryable_provider_error(err) is True
+
+
+def test_not_retryable_bare_validation_error():
+    """Non-retryable errors must still bubble immediately."""
+    from aaagent.core.app import _is_retryable_provider_error
+
+    err = ValueError("bad input shape")
+    assert _is_retryable_provider_error(err) is False
+
+
+@pytest.mark.asyncio
+async def test_moderation_block_triggers_fallback(tmp_path):
+    """End-to-end: primary provider's moderation block falls through to backup."""
+    from aaagent.core.app import Application
+    from aaagent.core.bus import EventBus
+
+    cfg = _write_minimal_config(tmp_path)
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    class _ModerationProvider(LLMProvider):
+        async def chat(self, messages, tools=None, **kwargs):
+            raise Exception("Error code: 422 - input new_sensitive (1026)")
+
+    class _OkProvider(LLMProvider):
+        async def chat(self, messages, tools=None, **kwargs):
+            return ChatResponse(content="ok-backup")
+
+    primary = _ModerationProvider.__new__(_ModerationProvider)
+    primary.__init__(name="primary", config={})
+    backup = _OkProvider.__new__(_OkProvider)
+    backup.__init__(name="backup", config={})
+
+    app = Application(
+        config_path=cfg,
+        bus=EventBus(),
+        memory=memory,
+        providers={"primary": primary, "backup": backup},
+        enabled_adapters=[],
+    )
+    # Wire the provider order explicitly: primary fails with moderation,
+    # backup succeeds.
+    app._provider_order = [primary, backup]
+    result = await app._chat_with_fallback([{"role": "user", "content": "hi"}])
+    assert result.content == "ok-backup"

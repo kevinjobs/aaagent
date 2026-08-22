@@ -46,6 +46,11 @@
   keys) is consulted when the primary fails transiently (network, timeout,
   429 rate limit, 5xx, overloaded). Non-transient errors are raised
   immediately. Streaming swaps only before the first token is emitted.
+- Moderation / content-policy blocks now also trigger fallback (markers:
+  `sensitive`, `unprocessable_entity`, `content_filter`,
+  `content_policy_violation`, `policy_violation`). MiniMax's stricter
+  filter previously masked useful responses with a generic 422; the chain
+  now falls through to a more permissive provider.
 - **Per-provider rate buckets**: `rate_limit.provider_rpm` now applies one
   token bucket per provider instead of a single shared bucket.
 - Fix: `default_provider` selection block was unreachable dead code after
