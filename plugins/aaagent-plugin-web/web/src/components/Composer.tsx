@@ -30,6 +30,8 @@ export function Composer({ onSend, disabled }: ComposerProps) {
     if (!text) return;
     onSend(text);
     setValue("");
+    // Re-focus so the user keeps typing without clicking again.
+    requestAnimationFrame(() => ref.current?.focus());
   };
 
   return (

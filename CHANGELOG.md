@@ -53,7 +53,47 @@ Tests:
   endpoint, fallback-page render, WebSocket round-trip end-to-end,
   ping/pong heartbeat.
 
-Test status: 362 passed / 1 skipped / 0 failed.
+Test status: 368 passed / 1 skipped / 0 failed.
+
+Bug fixes discovered during QA (in the same commit):
+
+* **Server-side blocking WS loop** (`server.py`): inbound frames
+  (`user_message`, `slash`) were awaited synchronously inside the
+  WS receive loop. Because `handle_inbound()` triggers the full
+  bus handler chain (LLM call, tool execution), the server could
+  not reply to a `ping` heartbeat while a slow LLM call was in
+  flight — the browser's keep-alive would fire and the socket
+  would drop. Fix: `asyncio.create_task(adapter.handle_inbound(...))`
+  so the receive loop stays responsive. The per-session lock in
+  `_handle_message` (a previous fix) still serialises two
+  concurrent messages for the same session, so correctness is
+  preserved.
+* **Push-queue OOM from slow client** (`adapter.py`): per-WS
+  `asyncio.Queue` was unbounded, so a persistently slow tab could
+  drain the process. Fix: `maxsize=128`; when full, `_broadcast`
+  drops the newest frame (the client recovers on the next event).
+* **React `useMemo` for side-effects** (`web/src/App.tsx`): the
+  WS frame handler was registered inside `useMemo`, which React
+  does not guarantee runs only once. Under StrictMode it ran
+  twice, doubling every dispatch. Fix: moved to `useEffect` with
+  a proper cleanup return, and replaced the closure-local
+  `lastAssistantId` with a `useRef` so it survives re-renders.
+* **Ping timer leak in StrictMode** (`web/src/hooks/useWebSocket.ts`):
+  `setInterval` in `ws.onopen` could be set twice under
+  StrictMode. Fix: clear any existing timer before setting a new
+  one, and clear on reconnect.
+* **Composer did not refocus after send** (`web/src/components/Composer.tsx`):
+  users had to click back into the input after every message.
+  Fix: `ref.current.focus()` after clearing.
+* **Slash-unknown type mismatch** (`web/src/hooks/useWebSocket.ts` +
+  `App.tsx`): the backend sends a `command` field but the frontend
+  type required it (not optional) and the reducer was re-deriving
+  it from `text`. Fix: `command?` is optional on the type; the
+  reducer prefers the backend's value, falls back to splitting on
+  whitespace for older backends.
+* **Dead `inbound_task` variable** (`server.py`): a stub variable
+  was kept for "future streaming input patterns" but was never
+  used and would confuse type-checkers. Fix: removed.
 
 ### Fix: pin the active LLM provider for tool turns in the same message
 

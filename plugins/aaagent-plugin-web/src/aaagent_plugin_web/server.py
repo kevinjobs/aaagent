@@ -112,11 +112,6 @@ def build_app(adapter: "WebAdapter", dist_dir: Path | None = None) -> FastAPI:
     async def ws_endpoint(ws: WebSocket) -> None:
         await ws.accept()
         queue = await adapter.register_pusher()
-        # Two coroutines on the same socket: one reads inbound frames
-        # and hands them to the adapter, the other pulls outbound
-        # frames off the queue and writes them. They terminate when
-        # the client disconnects.
-        inbound_task: asyncio.Task[None] | None = None
 
         async def pump_outbound() -> None:
             try:
@@ -138,11 +133,21 @@ def build_app(adapter: "WebAdapter", dist_dir: Path | None = None) -> FastAPI:
                     logger.warning("web: malformed JSON frame; closing socket")
                     await ws.close(code=1003)
                     return
-                # Heartbeat shortcut — keep the round-trip cheap.
+                # Heartbeat shortcut — keep the round-trip cheap. The
+                # reply goes synchronously so keep-alive works even when
+                # another LLM call is in flight on this same socket.
                 if isinstance(data, dict) and data.get("type") == "ping":
                     await ws.send_text('{"type":"pong"}')
                     continue
-                await adapter.handle_inbound(data)
+                # Dispatch the bus event as a fire-and-forget task. This
+                # keeps the WS receive loop responsive: a slow LLM call
+                # on one frame cannot block the next ping/heartbeat or
+                # a new user message from the same tab.
+                # A task-level crash is caught by our default
+                # unhandled-exception handler (bus._safe_call) so we
+                # don't need to await here.
+                asyncio.create_task(adapter.handle_inbound(data))
+                continue
         except WebSocketDisconnect:
             return
         finally:
@@ -152,9 +157,6 @@ def build_app(adapter: "WebAdapter", dist_dir: Path | None = None) -> FastAPI:
             except asyncio.CancelledError:
                 pass
             await adapter.unregister_pusher(queue)
-            # `inbound_task` is unused here (we read inline) but kept
-            # as a hook for future streaming-input patterns.
-            del inbound_task
 
     # Static assets. If the SPA hasn't been built, serve the fallback
     # page on `/` so users see a clear "build me" message instead of

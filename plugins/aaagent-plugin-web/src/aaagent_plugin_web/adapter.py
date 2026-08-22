@@ -116,11 +116,13 @@ class WebAdapter(IMAdapter):
     async def register_pusher(self) -> asyncio.Queue[str]:
         """Server calls this when a new WebSocket connects.
 
-        The adapter owns the queue; the server reads frames off it
-        and writes them to the socket. Each tab gets its own queue
-        so backpressure on one slow client doesn't stall another.
+        Each tab gets its own queue so backpressure on one slow client
+        doesn't stall another. We cap it so a persistently slow tab
+        cannot drain the process: when full, the newest frame drops
+        (see `_broadcast`) and the client simply doesn't see it.
+        A client that recovers will catch up on the next event.
         """
-        q: asyncio.Queue[str] = asyncio.Queue()
+        q: asyncio.Queue[str] = asyncio.Queue(maxsize=128)
         async with self._pushers_lock:
             self._pushers.append(q)
         return q

@@ -16,7 +16,7 @@ export type ServerFrame =
   | { type: "slash_reply"; reply: string }
   | { type: "slash_quit" }
   | { type: "slash_session_switch"; new_session: string | null }
-  | { type: "slash_unknown"; text: string; command: string };
+  | { type: "slash_unknown"; text: string; command?: string };
 
 export type ClientFrame =
   | { type: "user_message"; content: string; session_id?: string; chat_id?: string; user_id?: string }
@@ -47,6 +47,7 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const pingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const connect = useCallback(() => {
+    if (pingTimer.current) clearInterval(pingTimer.current);
     setStatus("connecting");
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -54,7 +55,9 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     ws.onopen = () => {
       setStatus("open");
       reconnectAttempts.current = 0;
-      // Keep-alive every 30s. Cheap, prevents idle drops.
+      // Keep-alive every 30s. Cleared on reconnect so StrictMode's
+      // double-invoke and tab-backgrounding don't spawn runaway
+      // ping loops.
       if (pingTimer.current) clearInterval(pingTimer.current);
       pingTimer.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {

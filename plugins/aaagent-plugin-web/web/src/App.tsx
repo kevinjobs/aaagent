@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useReducer, useState } from "react";
 import { useWebSocket, type ServerFrame } from "@/hooks/useWebSocket";
 import { ChatView, type ChatItem } from "@/components/ChatView";
 import { Composer } from "@/components/Composer";
@@ -29,7 +29,7 @@ type Action =
   | { type: "tool_start"; turn: number; tool_calls: { name: string; arguments: string }[] }
   | { type: "tool_result"; tool_call_id: string; tool_name: string; arguments: string; result: string; duration_ms: number }
   | { type: "slash_reply"; reply: string }
-  | { type: "slash_unknown"; text: string }
+  | { type: "slash_unknown"; text: string; command?: string }
   | { type: "slash_session_switch"; new_session: string | null }
   | { type: "reset" };
 
@@ -178,9 +178,13 @@ function reducer(state: State, action: Action): State {
         ],
       };
     case "slash_unknown":
-      // Derive the bare command from the typed text so we can show
-      // "未知命令：/foo" instead of dumping the full /foo args.
-      const cmd = (action.text || "").trim().split(/\s+/)[0] || action.text;
+      // Prefer the backend's parsed command name; fall back to
+      // deriving it from the raw text if the backend is older and
+      // didn't include `command`.
+      const cmd =
+        action.command?.trim() ||
+        (action.text || "").trim().split(/\s+/)[0] ||
+        action.text;
       return {
         ...state,
         items: [
@@ -229,30 +233,34 @@ export default function App() {
   const { status, send, onFrame } = useWebSocket(wsUrl);
   const [state, dispatch] = useReducer(reducer, initialState);
   const [theme, setTheme] = useState<"light" | "dark">(getInitialTheme);
+  // Track the in-flight streaming assistant message across renders.
+  // Using a ref instead of a closure-local variable means React 18
+  // StrictMode's double-invoke (and any future re-renders that happen
+  // before the `message` frame arrives) can't lose track of which
+  // message is currently accumulating tokens.
+  const streamingIdRef = useRef<string | null>(null);
 
   // Wire inbound frames to the reducer. We open a streaming placeholder
   // on the first token and close it on the final `message` frame.
-  // `useWebSocket`'s `onFrame` returns a cleanup function we capture.
-  useMemo(() => {
-    let lastAssistantId: string | null = null;
-    onFrame((frame: ServerFrame) => {
+  //
+  // MUST be `useEffect`, not `useMemo`: `useMemo` does not guarantee
+  // it runs only once, and React may discard the memoised value.
+  // Using `useMemo` for a side-effect registers the handler twice
+  // under StrictMode, leading to duplicate dispatches and chat items
+  // appearing twice.
+  useEffect(() => {
+    const handler = (frame: ServerFrame) => {
       switch (frame.type) {
         case "stream_token":
-          if (lastAssistantId === null) {
-            lastAssistantId = `a-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-            dispatch({ type: "assistant_begin", id: lastAssistantId });
+          if (streamingIdRef.current === null) {
+            streamingIdRef.current = `a-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            dispatch({ type: "assistant_begin", id: streamingIdRef.current });
           }
           dispatch({ type: "stream_token", chunk: frame.content });
           break;
         case "message":
-          if (frame.role === "assistant") {
-            dispatch({ type: "assistant_end", content: frame.content });
-          } else if (frame.role === "user") {
-            // echo — usually the agent echoing back what we sent; ignore
-          } else {
-            dispatch({ type: "assistant_end", content: frame.content });
-          }
-          lastAssistantId = null;
+          dispatch({ type: "assistant_end", content: frame.content });
+          streamingIdRef.current = null;
           break;
         case "tool_start":
           dispatch({
@@ -275,7 +283,7 @@ export default function App() {
           dispatch({ type: "slash_reply", reply: frame.reply });
           break;
         case "slash_unknown":
-          dispatch({ type: "slash_unknown", text: frame.text });
+          dispatch({ type: "slash_unknown", text: frame.text, command: frame.command });
           break;
         case "slash_session_switch":
           dispatch({ type: "slash_session_switch", new_session: frame.new_session });
@@ -284,7 +292,9 @@ export default function App() {
           // No surface action — the chat keeps going on the server.
           break;
       }
-    });
+    };
+    const unsubscribe = onFrame(handler);
+    return unsubscribe;
   }, [onFrame]);
 
   const toggleTheme = useCallback(() => {

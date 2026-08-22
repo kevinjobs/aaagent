@@ -186,3 +186,126 @@ def test_websocket_ping_frame_replies_with_pong():
         ws.send_text(json.dumps({"type": "ping"}))
         reply = json.loads(ws.receive_text())
         assert reply["type"] == "pong"
+
+
+@pytest.mark.asyncio
+async def test_push_queue_has_maxsize_to_prevent_oom_from_slow_client():
+    """Regression: a persistently slow client (e.g. tab backgrounded
+    by the browser) must not be able to drain the process. The
+    per-connection push queue is capped; when it fills up the
+    newest frame drops and the client simply doesn't see it."""
+    client, adapter = _make_app_pair()
+    q = await adapter.register_pusher()
+    assert q.maxsize > 0, "queue must be capped to prevent slow-client OOM"
+
+
+@pytest.mark.asyncio
+async def test_broadcast_drops_newest_frame_when_queue_full():
+    """When the push queue is full, `_broadcast` must drop the
+    newest frame (not block) so the adapter's handler chain keeps
+    moving and other clients still receive events."""
+    client, adapter = _make_app_pair()
+    q = await adapter.register_pusher()
+    # Fill the queue to capacity.
+    for _ in range(q.maxsize):
+        q.put_nowait("filler")
+    # Now try to broadcast a real frame.
+    await adapter._bus.emit(
+        "message_to_send",
+        Message(
+            session_id="s1",
+            platform="web",
+            chat_id="c1",
+            user_id="u1",
+            content="important",
+            role="assistant",
+        ),
+    )
+    await asyncio.sleep(0)
+    # The queue must still be full, with "important" dropped.
+    top = q.get_nowait()
+    assert top == "filler"
+
+
+@pytest.mark.asyncio
+async def test_slash_unknown_frame_carrys_command_field():
+    """`slash_unknown` must include the parsed `command` so the
+    frontend can show '未知命令：/foo' rather than dumping the full
+    '/foo arg' text. If the backend older version omits it, the
+    frontend will fall back to splitting on whitespace."""
+    client, adapter = _make_app_pair()
+    q = await adapter.register_pusher()
+
+    await adapter._bus.emit(
+        "slash_unknown",
+        {
+            "platform": "web",
+            "text": "/foo arg1",
+            "command": "/foo",
+        },
+    )
+    await asyncio.sleep(0)
+    frame = json.loads(q.get_nowait())
+    assert frame["type"] == "slash_unknown"
+    assert frame["command"] == "/foo"
+
+
+@pytest.mark.asyncio
+async def test_handle_inbound_ignores_empty_user_message():
+    """A user message with only whitespace must not reach the bus;
+    emitting an empty message_to_send would pollute the session
+    store and waste LLM tokens."""
+    client, adapter = _make_app_pair()
+    captured: list[Message] = []
+    adapter._bus.on(
+        "message_received",
+        lambda m: captured.append(m) or asyncio.create_task(_noop()),
+    )
+
+    async def _noop():
+        pass
+
+    for payload in (
+        {"type": "user_message", "content": ""},
+        {"type": "user_message", "content": "   "},
+        {"type": "user_message", "content": "\t\n"},
+    ):
+        await adapter.handle_inbound(payload)
+        await asyncio.sleep(0)
+    assert not captured
+
+
+@pytest.mark.asyncio
+async def test_broadcast_skips_platforms_other_than_web_and_cli():
+    """Cross-platform event isolation: a reply destined for Feishu
+    or a headless script must not appear in the browser."""
+    client, adapter = _make_app_pair()
+    q = await adapter.register_pusher()
+
+    for platform in ("feishu", "cli-legacy", "mcp", "custom"):
+        await adapter._bus.emit(
+            "message_to_send",
+            Message(
+                session_id="s1",
+                platform=platform,
+                chat_id="c1",
+                user_id="u1",
+                content="leak?",
+                role="assistant",
+            ),
+        )
+        await asyncio.sleep(0)
+    with pytest.raises(asyncio.QueueEmpty):
+        q.get_nowait()
+
+
+def test_websocket_rejects_malformed_json_frame():
+    """Non-JSON inbound frames must close the socket cleanly with
+    code 1003 (Unsupported Data) rather than raising an unhandled
+    exception in the server loop."""
+    client, _ = _make_app_pair()
+    with pytest.raises(Exception):  # FastAPI.TestClient raises on 1003
+        with client.websocket_connect("/api/ws") as ws:
+            ws.send_text("not-json-at-all")
+            # Server should close with 1003.
+            ws.receive_text()
