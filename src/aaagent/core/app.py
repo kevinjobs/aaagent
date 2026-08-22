@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -49,8 +50,47 @@ logger = logging.getLogger("aaagent")
 _THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
 _UNCLOSED_THINK_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*\Z", re.DOTALL | re.IGNORECASE)
 _PUBLIC_ERROR = "服务暂时不可用，请稍后再试。"
-_MAX_TOOL_TURNS = 20
+_MAX_TOOL_TURNS = 10  # bumped-down default — config override below
 _MAX_TOOL_CHARS = 200_000
+_DEFAULT_TOOL_WALLCLOCK_S = 120
+_DEFAULT_PROVIDER_RPM = 30
+
+
+@dataclass
+class Limits:
+    """Resource caps for the agent's main loop.
+
+    All fields are read from `config.limits.*` at startup. Operators
+    who want to bump (or relax) any cap edit `config.yaml` — no code
+    change required.
+
+    `max_tool_wallclock_s` is a NEW guard that bounds the total time
+    a single `_handle_message` is allowed to spend inside
+    `_run_tool_loop`. Without it a runaway LLM could keep the loop
+    alive indefinitely as long as it produces tool calls within the
+    per-turn iteration cap.
+    """
+
+    max_tool_turns: int = _MAX_TOOL_TURNS
+    max_tool_chars: int = _MAX_TOOL_CHARS
+    max_tool_wallclock_s: float = _DEFAULT_TOOL_WALLCLOCK_S
+    provider_rpm: int = _DEFAULT_PROVIDER_RPM
+    provider_persistence: str = "disk"  # "disk" | "memory"
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "Limits":
+        limits = cfg.get("limits", {}) or {}
+        return cls(
+            max_tool_turns=int(limits.get("max_tool_turns", _MAX_TOOL_TURNS)),
+            max_tool_chars=int(limits.get("max_tool_chars", _MAX_TOOL_CHARS)),
+            max_tool_wallclock_s=float(
+                limits.get("max_tool_wallclock_s", _DEFAULT_TOOL_WALLCLOCK_S)
+            ),
+            provider_rpm=int(
+                limits.get("provider_rpm", cfg.get("rate_limit", {}).get("provider_rpm", _DEFAULT_PROVIDER_RPM))
+            ),
+            provider_persistence=str(limits.get("provider_persistence", "disk")),
+        )
 
 
 def _strip_think(text: str) -> str:
@@ -218,11 +258,18 @@ class Application:
         self._tool_plugins: list[Any] = []
         self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
-        rate_cfg = self._config.get("rate_limit", {})
-        self._provider_rpm = int(rate_cfg.get("provider_rpm", 0))
+        # `_provider_rpm` is set by `Limits.from_config` above; legacy
+        # `rate_limit.provider_rpm` is still honoured when present.
+        self._provider_rpm = int(
+            self._config.get("rate_limit", {}).get("provider_rpm", 0)
+        )
         self._provider_buckets: dict[str, TokenBucket] = {}
         self._commands = SlashCommandRegistry()
         register_builtins(self._commands)
+        # Resource caps (turns, wallclock, RPM, persistence) read
+        # from `config.limits.*`. Provider RPM is still also read
+        # from `rate_limit.provider_rpm` for backward compatibility.
+        self._limits = Limits.from_config(self._config)
         # Wrap every logger handler so secret-bearing exception strings
         # never reach log files or stderr (Core 3 of capability limits).
         wrap_existing_handlers()
@@ -583,7 +630,7 @@ class Application:
         context = builder.build(session, profile=profile)
 
         try:
-            reply_text = await self._run_tool_loop(
+            reply_text = await self._run_tool_loop_with_limits(
                 msg.session_id, msg.platform, msg.chat_id, context
             )
             reply_text = _strip_think(reply_text)
@@ -658,6 +705,33 @@ class Application:
         assert last_exc is not None
         raise last_exc
 
+    async def _run_tool_loop_with_limits(
+        self,
+        session_id: str,
+        platform: str,
+        chat_id: str,
+        messages: list[dict[str, Any]],
+    ) -> str:
+        """Wrap `_run_tool_loop` with the wall-clock cap from `_limits`.
+
+        A timeout surfaces as a public "工具循环超时，已中止" reply so the
+        user knows the loop was aborted rather than a transient error.
+        The inner `_run_tool_loop` still honours its iteration cap and
+        message-size cap — this is purely an outer wall-clock fence.
+        """
+        wallclock = self._limits.max_tool_wallclock_s
+        try:
+            return await asyncio.wait_for(
+                self._run_tool_loop(session_id, platform, chat_id, messages),
+                timeout=wallclock if wallclock > 0 else None,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Tool loop exceeded wall-clock %.1fs for session %s",
+                wallclock, session_id,
+            )
+            return f"工具循环超时（{wallclock:.0f}s），已中止。请简化请求或调整 limits.max_tool_wallclock_s。"
+
     async def _run_tool_loop(
         self,
         session_id: str,
@@ -669,12 +743,14 @@ class Application:
         if not tools:
             return await self._stream_or_chat(messages)
 
-        for turn in range(1, _MAX_TOOL_TURNS + 1):
+        max_turns = self._limits.max_tool_turns
+        max_chars = self._limits.max_tool_chars
+        for turn in range(1, max_turns + 1):
             total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-            if total_chars > _MAX_TOOL_CHARS:
+            if total_chars > max_chars:
                 logger.warning(
                     "Tool loop messages exceed %d chars (%d), aborting for session %s",
-                    _MAX_TOOL_CHARS,
+                    max_chars,
                     total_chars,
                     session_id,
                 )
@@ -756,7 +832,7 @@ class Application:
                 )
                 await self._session_store.add_message(session_id, tool_msg)
 
-        logger.warning("Tool loop exceeded max turns (%d) for session %s", _MAX_TOOL_TURNS, session_id)
+        logger.warning("Tool loop exceeded max turns (%d) for session %s", max_turns, session_id)
         return "已达到最大工具调用次数。"
 
     def add_adapter(self, adapter: IMAdapter) -> None:
