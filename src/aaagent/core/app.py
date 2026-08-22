@@ -967,6 +967,20 @@ class Application:
     async def stop(self) -> None:
         self._cancel_background_tasks()
         await self._memory.close()
+        # Drain the session store's pending async writes (notably the
+        # _DualWriteSessionStore pending tasks backed by aiosqlite
+        # worker threads). Without this, the aiosqlite threads block
+        # loop.close() and Ctrl+C hangs in idle mode.
+        close_store = getattr(self._session_store, "close", None)
+        if close_store is not None:
+            try:
+                res = close_store()
+                if asyncio.iscoroutine(res):
+                    await asyncio.wait_for(res, timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("session store close timed out after 2s")
+            except Exception as e:  # noqa: BLE001
+                logger.error("session store close failed: %s", e)
         for plugin in getattr(self, "_tool_plugins", []):
             closer = getattr(plugin, "close", None)
             if closer is None:

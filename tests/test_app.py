@@ -406,3 +406,43 @@ async def test_moderation_block_triggers_fallback(tmp_path):
     app._provider_order = [primary, backup]
     result = await app._chat_with_fallback([{"role": "user", "content": "hi"}])
     assert result.content == "ok-backup"
+
+
+@pytest.mark.asyncio
+async def test_application_stop_closes_session_store(tmp_path):
+    """Regression: Application.stop() must call close() on the session
+    store when it implements one (e.g. _DualWriteSessionStore), so the
+    aiosqlite worker thread is released and Ctrl+C doesn't hang."""
+    from aaagent_plugin_sqlitesession import (
+        SqliteSessionStore,
+        _DualWriteSessionStore,
+    )
+    from aaagent_plugin_inmemorysession import InMemorySessionStore
+
+    cfg = _write_minimal_config(tmp_path)
+    db_path = tmp_path / "sessions.db"
+    primary = InMemorySessionStore()
+    secondary = SqliteSessionStore(
+        db_path=str(db_path), base_path=tmp_path
+    )
+    store = _DualWriteSessionStore(primary, secondary, restore_n=0)
+    # Simulate a pending write
+    await store.add_message(
+        "s1",
+        Message(
+            session_id="s1", platform="cli", chat_id="c", user_id="u",
+            content="hello", role="user",
+        ),
+    )
+    await store._drain_pending()
+    assert secondary._conn is not None
+
+    app = Application(
+        config_path=str(cfg),
+        bus=EventBus(),
+        memory=MarkdownMemoryStore(data_dir="data", base_path=tmp_path),
+        providers={},
+        session_store=store,
+    )
+    await app.stop()
+    assert secondary._conn is None

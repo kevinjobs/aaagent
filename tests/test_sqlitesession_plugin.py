@@ -504,3 +504,48 @@ async def test_tools_skipped_when_no_sqlite_store(tmp_path: Path):
     reg = _build_registry(app, config)
     assert "session_search" not in reg.tool_names
     assert "session_get_messages" not in reg.tool_names
+
+
+# ---------------------------------------------------------------------------
+# Shutdown / Ctrl+C regression
+# ---------------------------------------------------------------------------
+
+
+async def test_dual_write_close_drains_pending_and_closes_sqlite(
+    tmp_db_path_str: str, tmp_path: Path
+):
+    """Regression: Application.stop() must drain _DualWriteSessionStore
+    pending tasks and close the SQLite connection, otherwise the
+    aiosqlite worker thread blocks loop.close() and Ctrl+C hangs."""
+    primary = InMemorySessionStore()
+    secondary = SqliteSessionStore(
+        db_path=tmp_db_path_str, base_path=tmp_path
+    )
+    store = _DualWriteSessionStore(primary, secondary, restore_n=0)
+
+    for i in range(3):
+        await store.add_message("s1", _make_msg(content=f"m{i}"))
+
+    assert len(store._pending) >= 1
+    await store._drain_pending()
+    assert secondary._conn is not None
+
+    await store.close()
+
+    assert len(store._pending) == 0
+    assert secondary._conn is None
+
+
+async def test_dual_write_close_is_idempotent(
+    tmp_db_path_str: str, tmp_path: Path
+):
+    """Closing twice must not raise (Application.stop() may be called
+    more than once during shutdown)."""
+    primary = InMemorySessionStore()
+    secondary = SqliteSessionStore(
+        db_path=tmp_db_path_str, base_path=tmp_path
+    )
+    store = _DualWriteSessionStore(primary, secondary, restore_n=0)
+
+    await store.close()
+    await store.close()
