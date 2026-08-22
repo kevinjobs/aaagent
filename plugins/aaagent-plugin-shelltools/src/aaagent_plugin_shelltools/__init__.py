@@ -8,6 +8,7 @@ import unicodedata
 from typing import Any
 
 from aaagent.core.plugin import ToolPlugin
+from aaagent.core.policy import extract_shell_paths, is_protected_target
 from aaagent.core.sanitize import scrub
 
 logger = logging.getLogger("aaagent.tools.shell")
@@ -93,7 +94,7 @@ def _is_denied(command: str) -> str | None:
     return None
 
 
-async def run_shell(args: dict[str, Any]) -> str:
+async def run_shell(args: dict[str, Any], protected_patterns: list[str] | None = None) -> str:
     command = args["command"]
     timeout = args.get("timeout", 30)
     max_output = args.get("max_output", 4096)
@@ -101,6 +102,22 @@ async def run_shell(args: dict[str, Any]) -> str:
     denied = _is_denied(command)
     if denied:
         return f"Error: command denied by safety policy ({denied})"
+
+    # Protected-paths check: refuse to run a shell command whose
+    # argument or redirection target matches a glob in
+    # `limits.protected_paths`. Closes the "just use `cat > config.yaml`
+    # to bypass the file plugin" loophole.
+    if protected_patterns:
+        for candidate in extract_shell_paths(command):
+            if is_protected_target(candidate, protected_patterns):
+                logger.warning(
+                    "run_shell blocked by protected_paths: %s -> %s",
+                    command, candidate,
+                )
+                return (
+                    "Error: command targets a protected path "
+                    f"({candidate}) and was blocked"
+                )
 
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -150,6 +167,13 @@ class ShellToolsPlugin(ToolPlugin):
         shell_cfg = tools_cfg.get("shell", {}) if isinstance(tools_cfg, dict) else {}
         if not shell_cfg.get("enabled", True):
             return
+        protected_patterns = (config.get("limits", {}) or {}).get(
+            "protected_paths", []
+        )
+
+        async def _run_shell(args: dict[str, Any]) -> str:
+            return await run_shell(args, protected_patterns)
+
         registry.register(
             name="run_shell",
             description=(
@@ -174,7 +198,7 @@ class ShellToolsPlugin(ToolPlugin):
                 },
                 "required": ["command"],
             },
-            handler=run_shell,
+            handler=_run_shell,
         )
 
 

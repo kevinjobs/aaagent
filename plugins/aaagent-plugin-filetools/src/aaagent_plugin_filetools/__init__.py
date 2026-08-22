@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from aaagent.core.plugin import ToolPlugin
+from aaagent.core.policy import is_protected_target
 
 logger = logging.getLogger("aaagent.tools.file")
 
@@ -24,9 +25,27 @@ def _ensure_allowed(path: str, allowed_dirs: list[str] | None) -> str:
     raise PermissionError(f"Path '{path}' is not in allowed directories: {allowed_dirs}")
 
 
-async def read_file(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
+def _check_protected(path: str, protected_patterns: list[str] | None) -> str | None:
+    """Return an error string if `path` matches a protected glob, else None."""
+    if not protected_patterns:
+        return None
+    if is_protected_target(path, protected_patterns):
+        return (
+            f"Error: path is protected and cannot be modified by the agent: {path}"
+        )
+    return None
+
+
+async def read_file(
+    args: dict[str, Any],
+    allowed_dirs: list[str] | None,
+    protected_patterns: list[str] | None = None,
+) -> str:
     try:
         path = _ensure_allowed(args["path"], allowed_dirs)
+        protected_err = _check_protected(path, protected_patterns)
+        if protected_err:
+            return protected_err
         with open(path, encoding="utf-8", errors="replace") as f:
             content = f.read()
         return content
@@ -40,10 +59,17 @@ async def read_file(args: dict[str, Any], allowed_dirs: list[str] | None) -> str
         return f"Error reading file: {e}"
 
 
-async def write_file(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
+async def write_file(
+    args: dict[str, Any],
+    allowed_dirs: list[str] | None,
+    protected_patterns: list[str] | None = None,
+) -> str:
     content = args["content"]
     try:
         path = _ensure_allowed(args["path"], allowed_dirs)
+        protected_err = _check_protected(path, protected_patterns)
+        if protected_err:
+            return protected_err
         parent = Path(path).parent
         parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -55,9 +81,16 @@ async def write_file(args: dict[str, Any], allowed_dirs: list[str] | None) -> st
         return f"Error writing file: {e}"
 
 
-async def list_dir(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
+async def list_dir(
+    args: dict[str, Any],
+    allowed_dirs: list[str] | None,
+    protected_patterns: list[str] | None = None,
+) -> str:
     try:
         path = _ensure_allowed(args["path"], allowed_dirs)
+        protected_err = _check_protected(path, protected_patterns)
+        if protected_err:
+            return protected_err
         entries = os.listdir(path)
         lines: list[str] = []
         for entry in sorted(entries):
@@ -75,11 +108,21 @@ async def list_dir(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
         return f"Error listing directory: {e}"
 
 
-async def grep_files(args: dict[str, Any], allowed_dirs: list[str] | None) -> str:
+async def grep_files(
+    args: dict[str, Any],
+    allowed_dirs: list[str] | None,
+    protected_patterns: list[str] | None = None,
+) -> str:
     pattern = args["pattern"]
     include = args.get("include", "*")
     try:
         root = _ensure_allowed(args.get("path", "."), allowed_dirs)
+        # grep is read-only — but if the operator protected a path
+        # outright, refuse to read it (otherwise write-protection is
+        # useless since the contents leak via grep).
+        protected_err = _check_protected(root, protected_patterns)
+        if protected_err:
+            return protected_err
         import fnmatch
         import re
 
@@ -90,6 +133,10 @@ async def grep_files(args: dict[str, Any], allowed_dirs: list[str] | None) -> st
                 if not fnmatch.fnmatch(fn, include):
                     continue
                 full = Path(dirpath) / fn
+                if protected_patterns and is_protected_target(
+                    str(full), protected_patterns
+                ):
+                    continue
                 try:
                     with open(full, encoding="utf-8", errors="replace") as f:
                         for lineno, line in enumerate(f, 1):
@@ -117,18 +164,21 @@ class FileToolsPlugin(ToolPlugin):
 
     def register(self, registry: Any, config: dict[str, Any]) -> None:
         allowed_dirs = registry.allowed_dirs
+        protected_patterns = (config.get("limits", {}) or {}).get(
+            "protected_paths", []
+        )
 
         async def _read_file(args: dict[str, Any]) -> str:
-            return await read_file(args, allowed_dirs)
+            return await read_file(args, allowed_dirs, protected_patterns)
 
         async def _write_file(args: dict[str, Any]) -> str:
-            return await write_file(args, allowed_dirs)
+            return await write_file(args, allowed_dirs, protected_patterns)
 
         async def _list_dir(args: dict[str, Any]) -> str:
-            return await list_dir(args, allowed_dirs)
+            return await list_dir(args, allowed_dirs, protected_patterns)
 
         async def _grep_files(args: dict[str, Any]) -> str:
-            return await grep_files(args, allowed_dirs)
+            return await grep_files(args, allowed_dirs, protected_patterns)
 
         registry.register(
             name="read_file",
@@ -153,11 +203,11 @@ class FileToolsPlugin(ToolPlugin):
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path where the file should be written",
+                        "description": "Path where the content should be written",
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write to the file",
+                        "description": "Content to write",
                     },
                 },
                 "required": ["path", "content"],

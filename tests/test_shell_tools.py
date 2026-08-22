@@ -53,3 +53,71 @@ async def test_run_shell_blocks_dangerous_command():
 async def test_run_shell_executes_safe_command():
     out = await run_shell({"command": "echo hello"})
     assert "hello" in out
+
+
+# ----------------------------------------------------------------------
+# protected_paths gating
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_shell_blocks_redirect_to_protected_path():
+    out = await run_shell(
+        {"command": "echo evil > config.yaml"},
+        protected_patterns=["config.yaml"],
+    )
+    assert "protected" in out.lower()
+    assert "blocked" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_shell_blocks_append_redirect_to_protected():
+    out = await run_shell(
+        {"command": "echo x >> config.yaml"},
+        protected_patterns=["config.yaml"],
+    )
+    assert "protected" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_shell_blocks_cat_into_protected_path():
+    out = await run_shell(
+        {"command": "cat foo > .env"},
+        protected_patterns=[".env"],
+    )
+    assert "protected" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_shell_allows_unrelated_targets():
+    """Without protected_patterns or with non-matching ones, the
+    command runs through to the deny rules and then the executor."""
+    out = await run_shell(
+        {"command": "echo done > result.txt"},
+        protected_patterns=["config.yaml", ".env"],
+    )
+    # The command was NOT blocked by the protected-paths gate.
+    # (echo redirects stdout to a file, so we won't see "done" in
+    # the captured output — that's a property of echo, not a sign
+    # the gate fired.)
+    assert "protected" not in out.lower()
+    assert "blocked" not in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_shell_protected_paths_glob():
+    out = await run_shell(
+        {"command": "cp foo key.pem"},
+        protected_patterns=["*.pem"],
+    )
+    assert "protected" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_shell_no_protected_patterns_no_op():
+    """When protected_patterns is None/empty, behaviour is unchanged."""
+    out = await run_shell(
+        {"command": "echo a > config.yaml"},
+        protected_patterns=None,
+    )
+    assert "protected" not in out.lower()
