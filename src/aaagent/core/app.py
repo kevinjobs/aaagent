@@ -340,6 +340,8 @@ class Application:
             try:
                 if hasattr(plugin, "set_memory"):
                     plugin.set_memory(self._memory)
+                if hasattr(plugin, "set_application"):
+                    plugin.set_application(self)
                 plugin.register(registry, self._config)
             except Exception as e:  # noqa: BLE001
                 logger.error(
@@ -626,6 +628,7 @@ class Application:
             session_id=msg.session_id,
             platform=msg.platform,
             chat_id=msg.chat_id,
+            user_id=msg.user_id,
         )
         try:
             await self._handle_message(msg)

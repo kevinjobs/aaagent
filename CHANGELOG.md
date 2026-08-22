@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.3 - Unreleased
+
+### Scheduler plugin — cron-style scheduled tasks
+
+New plugin `aaagent-plugin-scheduler` registers four tools that let
+the LLM create, list, remove, and toggle cron-style scheduled tasks:
+
+- **`schedule_create`** — create a `recurring` (5-field or 6-field
+  with seconds cron expression) or `once` (ISO datetime) schedule.
+  Requires `platform` / `chat_id` / `user_id` for delivery routing.
+- **`schedule_list`** — list the current user's schedules (filtered
+  by `creator_user_id` from the inbound message's `user_id`).
+- **`schedule_remove`** / **`schedule_update`** — owner-only
+  mutations.
+
+Triggers fire on a 5-second tick (`tick_seconds` config). At fire
+time the plugin emits `message_received` on the bus; the existing
+Application pipeline handles the full agent loop (tools, memory,
+session persistence, adapter reply) — no LLM code duplicated.
+
+Permission model: each record carries `creator_user_id`; only the
+creator can list / mutate their own schedules. Cross-user access
+is refused.
+
+Persistence: JSON file at `data/scheduler/schedules.json` (atomic
+write via temp + rename, with best-effort cross-platform file lock).
+
+### Plumbing
+
+- New `set_application(self)` hook on `Application._setup_tool_registry`,
+  mirroring `set_memory` so plugins can reach the bus + project root
+  without new infrastructure in `PluginManager`.
+- `aaagent.core.logctx` extended with a `user_id` contextvar plus
+  `current_user_id()` accessor. The inbound message's `user_id` is
+  now available to tool handlers via this contextvar, which the
+  scheduler uses for owner-scoped operations.
+
 ## 0.4.2 - Unreleased
 
 ### Skills plugin — LLM-authorable, file-backed instructions
