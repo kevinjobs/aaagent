@@ -304,6 +304,13 @@ python -m aaagent chat
 | `/session <name>` | Switch to a different session |
 | `/quit` or `/exit` | Exit chat |
 
+Slash commands are handled centrally by `aaagent.core.commands.SlashCommandRegistry`
+so future IM adapters (web, Slack, ...) get the same `/help` / `/session`
+support out of the box. Per-platform blacklists in `config.yaml`
+(`slash_command_blacklist.<platform>`) suppress side effects (e.g.
+`/quit` on Feishu) while still replying a friendly "this platform does
+not support that command" notice.
+
 ### Run mode (start all enabled IM adapters)
 
 ```bash

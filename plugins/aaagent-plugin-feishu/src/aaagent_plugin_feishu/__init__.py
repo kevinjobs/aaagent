@@ -72,6 +72,7 @@ class FeishuAdapter(IMAdapter):
             )
 
         self.bus.on("message_to_send", self._on_message_to_send)
+        self.bus.on("slash_reply", self._on_slash_reply)
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:
@@ -440,6 +441,18 @@ class FeishuAdapter(IMAdapter):
             user_id = sender_id.get("open_id", "")
             session_id = f"feishu-{chat_id}"
 
+            if text.startswith("/"):
+                await self.bus.emit(
+                    "slash_command",
+                    {
+                        "text": text,
+                        "platform": "feishu",
+                        "session_id": session_id,
+                        "chat_id": chat_id,
+                    },
+                )
+                return
+
             msg = Message(
                 session_id=session_id,
                 platform="feishu",
@@ -466,6 +479,25 @@ class FeishuAdapter(IMAdapter):
                 logger.exception(
                     "Feishu send failed for session %s", msg.session_id
                 )
+
+    async def _on_slash_reply(self, payload: dict) -> None:
+        if payload.get("platform") != "feishu":
+            return
+        reply = payload.get("reply")
+        chat_id = payload.get("chat_id")
+        session_id = payload.get("session_id", "")
+        if not reply or not chat_id:
+            return
+        await self.send(
+            Message(
+                session_id=session_id,
+                platform="feishu",
+                chat_id=chat_id,
+                user_id="assistant",
+                content=str(reply),
+                role="assistant",
+            )
+        )
 
     def _extract_text(self, content: str, msg_type: str) -> str:
         if msg_type != "text":

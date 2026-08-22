@@ -29,6 +29,10 @@ class CliAdapter(IMAdapter):
         self._bus.on("tool_start", self._on_tool_start)
         self._bus.on("tool_result", self._on_tool_result)
         self._bus.on("stream_token", self._on_stream_token)
+        self._bus.on("slash_reply", self._on_slash_reply)
+        self._bus.on("slash_quit", self._on_slash_quit)
+        self._bus.on("slash_session_switch", self._on_slash_session_switch)
+        self._bus.on("slash_unknown", self._on_slash_unknown)
         self._streaming = False
 
     async def start(self) -> None:
@@ -113,8 +117,16 @@ class CliAdapter(IMAdapter):
                     continue
 
                 if line.startswith("/"):
-                    if self._handle_command(line):
-                        continue
+                    await self._bus.emit(
+                        "slash_command",
+                        {
+                            "text": line,
+                            "platform": "cli",
+                            "session_id": self._session_id,
+                            "chat_id": self._session_id,
+                        },
+                    )
+                    continue
 
                 msg = Message(
                     session_id=self._session_id,
@@ -135,31 +147,31 @@ class CliAdapter(IMAdapter):
         except (EOFError, KeyboardInterrupt):
             raise
 
-    def _handle_command(self, cmd: str) -> bool:
-        parts = cmd.split(maxsplit=1)
-        command = parts[0].lower()
-        arg = parts[1] if len(parts) > 1 else ""
+    async def _on_slash_reply(self, payload: dict[str, Any]) -> None:
+        if payload.get("platform") != "cli":
+            return
+        reply = payload.get("reply")
+        if reply:
+            self._console.print(f"[dim]{reply}[/]")
 
-        if command == "/quit" or command == "/exit":
-            self._running = False
-            return True
-        elif command == "/session":
-            if arg:
-                self._session_id = f"cli-{arg}"
-                self._console.print(f"[dim]Switched to session: {self._session_id}[/]")
-            else:
-                self._console.print(f"[dim]Current session: {self._session_id}[/]")
-            return True
-        elif command == "/help":
-            self._console.print(
-                "[dim]/quit, /exit - Exit chat\n"
-                "/session <name> - Switch session\n"
-                "/help - Show this help[/]"
-            )
-            return True
-        else:
-            self._console.print(f"[dim]Unknown command: {command}[/]")
-            return True
+    async def _on_slash_quit(self, payload: dict[str, Any]) -> None:
+        if payload.get("platform") != "cli":
+            return
+        self._running = False
+
+    async def _on_slash_session_switch(self, payload: dict[str, Any]) -> None:
+        if payload.get("platform") != "cli":
+            return
+        new_session = payload.get("new_session")
+        if new_session:
+            self._session_id = new_session
+
+    async def _on_slash_unknown(self, payload: dict[str, Any]) -> None:
+        if payload.get("platform") != "cli":
+            return
+        text = payload.get("text", "")
+        command = text.split(maxsplit=1)[0] if text else ""
+        self._console.print(f"[dim]Unknown command: {command}[/]")
 
     def _print_assistant(self, content: str) -> None:
         self._console.print()

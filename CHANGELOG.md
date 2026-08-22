@@ -2,6 +2,18 @@
 
 ## 0.3.1 - Unreleased
 
+### Slash commands
+- New `aaagent.core.commands.SlashCommandRegistry` centralises chat-time
+  meta commands (`/help`, `/session`, `/quit`, `/exit`). CLI and Feishu
+  adapters now both emit a `slash_command` bus event for lines starting
+  with `/`; core routes through the registry and emits `slash_reply`,
+  `slash_quit`, `slash_session_switch`, `slash_unknown` for adapters to
+  act on.
+- Per-platform blacklists (`config.yaml: slash_command_blacklist.<platform>`)
+  suppress side effects on platforms where they don't make sense (e.g.
+  `/quit` on Feishu) while still replying a friendly "this platform does
+  not support that command" notice.
+
 ### Web tools
 - New `aaagent-plugin-websearch`: provides `web_search` via a pluggable
   `Backend` ABC; ships with `TavilyBackend` (default), requires

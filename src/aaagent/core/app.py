@@ -19,6 +19,12 @@ from aaagent.core._builtin_wrappers import (
     BUILTIN_TOOLS,
 )
 from aaagent.core.bus import EventBus
+from aaagent.core.commands import (
+    SlashCommandRegistry,
+    SlashContext,
+    SlashResult,
+    register_builtins,
+)
 from aaagent.core.logctx import reset_context, set_context
 from aaagent.core.memory import MemoryStore
 from aaagent.core.message import Message
@@ -205,6 +211,8 @@ class Application:
         rate_cfg = self._config.get("rate_limit", {})
         self._provider_rpm = int(rate_cfg.get("provider_rpm", 0))
         self._provider_buckets: dict[str, TokenBucket] = {}
+        self._commands = SlashCommandRegistry()
+        register_builtins(self._commands)
         self._setup()
 
     def _load_config(self, path: str) -> dict[str, Any]:
@@ -453,6 +461,67 @@ class Application:
 
     def _setup_event_handlers(self) -> None:
         self._bus.on("message_received", self._on_message_received)
+        self._bus.on("slash_command", self._on_slash_command)
+
+    def _slash_blacklist(self, platform: str) -> set[str]:
+        cfg = self._config.get("slash_command_blacklist", {}) or {}
+        raw = cfg.get(platform, []) or []
+        return {str(x).lower() for x in raw if isinstance(x, str)}
+
+    async def _on_slash_command(self, payload: dict[str, Any]) -> None:
+        text = str(payload.get("text", ""))
+        platform = str(payload.get("platform", ""))
+        session_id = str(payload.get("session_id", ""))
+        chat_id = str(payload.get("chat_id", ""))
+        ctx = SlashContext(
+            platform=platform,
+            session_id=session_id,
+            chat_id=chat_id,
+            app=self,
+        )
+        result: SlashResult = self._commands.handle(
+            text, ctx, blacklist=self._slash_blacklist(platform)
+        )
+
+        if result.reply:
+            await self._bus.emit(
+                "slash_reply",
+                {
+                    "platform": platform,
+                    "session_id": session_id,
+                    "chat_id": chat_id,
+                    "reply": result.reply,
+                    "suppressed": result.suppressed,
+                },
+            )
+
+        if result.switch_session:
+            await self._bus.emit(
+                "slash_session_switch",
+                {
+                    "platform": platform,
+                    "session_id": session_id,
+                    "chat_id": chat_id,
+                    "new_session": result.switch_session,
+                },
+            )
+
+        if result.stop_adapter:
+            await self._bus.emit(
+                "slash_quit",
+                {"platform": platform, "session_id": session_id},
+            )
+
+        if not result.matched:
+            await self._bus.emit(
+                "slash_unknown",
+                {
+                    "platform": platform,
+                    "session_id": session_id,
+                    "chat_id": chat_id,
+                    "text": text,
+                },
+            )
 
     async def _establish_tool_plugins(self) -> None:
         for plugin in self._tool_plugins:
