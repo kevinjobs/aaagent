@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.4.4 - Unreleased
+
+### SQLite session mirror + cross-session history tools
+
+New plugin `aaagent-plugin-sqlitesession` registers two session-store
+factories and two LLM tools:
+
+**Factories (`session.type` in config):**
+- **`dual_write`** (default for new configs) — wraps an in-memory
+  primary store as the hot path and asynchronously mirrors every
+  write to a SQLite database. Writes are serialised with an
+  `asyncio.Lock` and scheduled via `create_task`; SQLite failures
+  only log a warning and never block the conversation.
+- **`sqlite`** — a `SessionStore` that talks directly to SQLite with
+  no in-memory cache. Useful for debugging or single-process workloads.
+
+**Restore-on-startup:** the most recently active `restore_n` sessions
+(default 1) are rehydrated from SQLite into the primary at app start;
+other sessions are lazy-loaded on first `get_session` /
+`get_context` access.
+
+**Schema (SQLite):**
+- `sessions(id PK, platform, chat_id, user_id, summary,
+  system_prompt, created_at, last_activity)` with index on
+  `(user_id, platform, last_activity DESC)`.
+- `messages(id PK, session_id FK, role, content, raw JSON, timestamp,
+  tool_call_id, name, tool_calls JSON)` with index on
+  `(session_id, timestamp ASC)`.
+- `PRAGMA journal_mode=WAL`, `foreign_keys=ON`, `synchronous=NORMAL`.
+
+**LLM tools:**
+- **`session_search`** — keyword search across past messages,
+  scoped to `current_user_id()` + current `platform`.
+  Returns matching snippets (200 chars), `session_id`, `role`,
+  timestamp. Cross-user reads return empty, never an error.
+- **`session_get_messages`** — fetch the message list of a single
+  session with the same scope check (`session_id` required, `limit`
+  capped at 200, optional `since_timestamp`).
+
+**Tool plumbing:**
+- `Application._last_message` is set on every `_on_message_received`
+  so plugins can derive the current platform without re-plumbing.
+- New entry-point groups: `aaagent.sessions` (`dual_write`, `sqlite`)
+  and `aaagent.tools` (`sqlite_session`).
+
+**Dependencies:** `aiosqlite>=0.19` (workspace-only, no runtime
+impact on the core).
+
 ## 0.4.3 - Unreleased
 
 ### Scheduler plugin — cron-style scheduled tasks

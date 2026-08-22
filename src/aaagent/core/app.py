@@ -227,6 +227,9 @@ class Application:
         self._adapters: list[IMAdapter] = []
         self._providers: dict[str, LLMProvider] = providers if providers is not None else {}
         self._provider: LLMProvider | None = None
+        # Set by _on_message_received so plugins (e.g. sqlite_session tools)
+        # can derive the current platform / user_id without re-plumbing.
+        self._last_message: Message | None = None
         # Memory via plugin factory (fallback to direct construction when no plugin)
         if memory is None:
             memory_cfg = self._config.get("memory", {})
@@ -624,6 +627,7 @@ class Application:
             logger.error("No LLM provider configured")
             return
 
+        self._last_message = msg
         tokens = set_context(
             session_id=msg.session_id,
             platform=msg.platform,
@@ -873,6 +877,12 @@ class Application:
         if self._memory is not None and self._archive_interval > 0:
             self._archive_task = asyncio.create_task(self._archive_sweep_loop())
         await self._establish_tool_plugins()
+        warmup = getattr(self._session_store, "warmup", None)
+        if warmup is not None:
+            try:
+                await warmup()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("session store warmup failed: %s", e)
         try:
             tasks = [adapter.start() for adapter in self._adapters]
             await asyncio.gather(*tasks, return_exceptions=True)

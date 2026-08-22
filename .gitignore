@@ -15,5 +15,13 @@ htmlcov/
 data/
 logs/
 .opencode/
+# SQLite session mirror DB and its WAL sidecars
+data/sessions.db
+data/sessions.db-journal
+data/sessions.db-wal
+data/sessions.db-shm
+*.db-journal
+*.db-wal
+*.db-shm
 # Test artifacts produced by run_shell integration tests
 result.txt

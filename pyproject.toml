@@ -37,6 +37,7 @@ members = [
     "plugins/aaagent-plugin-mcp",
     "plugins/aaagent-plugin-skills",
     "plugins/aaagent-plugin-scheduler",
+    "plugins/aaagent-plugin-sqlitesession",
     "plugins/aaagent-plugin-cliadapter",
     "plugins/aaagent-plugin-feishu",
     "plugins/aaagent-plugin-inmemorysession",
@@ -54,6 +55,7 @@ aaagent-plugin-memorytools = { workspace = true }
 aaagent-plugin-mcp = { workspace = true }
 aaagent-plugin-skills = { workspace = true }
 aaagent-plugin-scheduler = { workspace = true }
+aaagent-plugin-sqlitesession = { workspace = true }
 aaagent-plugin-cliadapter = { workspace = true }
 aaagent-plugin-feishu = { workspace = true }
 aaagent-plugin-inmemorysession = { workspace = true }
