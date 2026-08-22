@@ -248,6 +248,14 @@ class Application:
         self._tool_plugins: list[Any] = []
         self._tool_registry = tool_registry if tool_registry is not None else self._setup_tool_registry()
         self._enabled_adapters = enabled_adapters
+        # Per-session locks that serialise `_handle_message` for the same
+        # `session_id`. Without this, two concurrent inbound messages
+        # (e.g. a user message plus a scheduler-fired reminder) race:
+        # both calls see partial session state and the LLM builds its
+        # reply on top of a half-written context, producing confused
+        # answers like greeting+scheduler-tips mixed together.
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_locks_guard = asyncio.Lock()
         # DefaultAgentLoop takes a back-reference to this Application; the
         # loop reads `_tool_registry`, `_chat_with_fallback`, `_session_store`,
         # `_bus`, `_provider_order`, `_acquire_provider_bucket`, and `_limits`.
@@ -628,6 +636,11 @@ class Application:
             return
 
         self._last_message = msg
+        # Serialise _handle_message for the same session_id so concurrent
+        # inbound messages (e.g. user + scheduler-fired reminder) don't
+        # race on the session store. Different sessions still run in
+        # parallel.
+        lock = await self._get_session_lock(msg.session_id)
         tokens = set_context(
             session_id=msg.session_id,
             platform=msg.platform,
@@ -635,9 +648,27 @@ class Application:
             user_id=msg.user_id,
         )
         try:
-            await self._handle_message(msg)
+            async with lock:
+                await self._handle_message(msg)
         finally:
             reset_context(tokens)
+
+    async def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the per-session lock, creating it lazily.
+
+        The outer guard lock keeps concurrent first-callers from racing
+        on `dict.setdefault` and each ending up with a different Lock
+        object for the same session_id.
+        """
+        existing = self._session_locks.get(session_id)
+        if existing is not None:
+            return existing
+        async with self._session_locks_guard:
+            existing = self._session_locks.get(session_id)
+            if existing is None:
+                existing = asyncio.Lock()
+                self._session_locks[session_id] = existing
+            return existing
 
     async def _handle_message(self, msg: Message) -> None:
         """Persist the inbound message, hand off to the AgentLoop, persist the reply.

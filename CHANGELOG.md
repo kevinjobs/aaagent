@@ -2,6 +2,36 @@
 
 ## 0.4.5 - Unreleased
 
+### Fix: per-session lock to prevent "mixed-context" replies
+
+When two `message_received` events for the same `session_id` arrived
+in quick succession (e.g. a user message plus a scheduler-fired
+reminder), the two `_handle_message` coroutines used to run
+concurrently. Both would `add_message()` then `get_session()` then
+call the LLM. The second call saw the first call's inbound message
+but NOT its reply (which hadn't been written yet), and both LLM calls
+ended up reasoning over the same half-baked context. The user-visible
+symptom was a single reply that mixed two unrelated topics, e.g.
+
+> 你好呀，强哥！👋 灰机随时待命～...
+> 支持的，强哥。目前有两种定时任务：...
+
+…after typing `你好`.
+
+Fix: `Application` now holds a per-`session_id` lock. `_on_message_received`
+acquires the lock before calling `_handle_message`, so the second call
+waits for the first to fully finish (including persisting its reply).
+Different sessions still run in parallel; only same-session
+`_handle_message` calls are serialised. This is the same scope a
+single agent loop naturally has, so the lock matches the
+expectation rather than introducing new ordering.
+
+`aaagent-plugin-scheduler` and the IM adapters both emit
+`message_received`; if their events overlap with a user message in the
+same session, the lock now prevents the LLM from interleaving them.
+
+Regression test: `test_app.py::test_concurrent_messages_same_session_are_serialised`.
+
 ### Feishu: "thinking…" indicator for slow LLM replies
 
 `aaagent-plugin-feishu` now posts a temporary "thinking…" message

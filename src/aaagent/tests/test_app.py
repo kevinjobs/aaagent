@@ -490,3 +490,133 @@ async def test_handle_message_returns_public_error_when_provider_chat_explodes(t
     loop = DefaultAgentLoop(app)
     out = await loop.handle_message(msg, context)
     assert "服务暂时不可用" in out
+
+
+@pytest.mark.asyncio
+async def test_concurrent_messages_same_session_are_serialised(tmp_path):
+    """Regression: two `message_received` events for the same session
+    fired concurrently (e.g. a user message + a scheduler-fired
+    reminder) used to race: both `_handle_message` calls saw partial
+    session state and the LLM reply came back with both topics mixed
+    ("你好呀...支持的，强哥。目前有两种定时任务..."). The Application
+    now holds a per-session lock so the second call waits for the
+    first to finish, and each LLM call sees a stable context.
+    """
+    import asyncio as _asyncio
+
+    cfg = _write_minimal_config(tmp_path)
+    bus = EventBus()
+    memory = MarkdownMemoryStore(data_dir="data", base_path=tmp_path)
+
+    # The provider records the messages it sees on each call so we can
+    # verify that no call ever observed a half-written context.
+    seen: list[list[dict]] = []
+
+    class _Recorder(LLMProvider):
+        def __init__(self):
+            super().__init__(name="rec", config={})
+
+        async def chat(self, messages, tools=None, **kwargs):
+            seen.append(list(messages))
+            # Slow down the LLM call so the two concurrent messages
+            # really do overlap in the absence of the lock.
+            await _asyncio.sleep(0.05)
+            # Use the last user message as the reply so we can tell
+            # the LLM calls apart.
+            last_user = next(
+                (m for m in reversed(messages) if m.get("role") == "user"),
+                None,
+            )
+            content = (last_user or {}).get("content", "noop") or "noop"
+            return ChatResponse(content=f"reply:{content}")
+
+    provider = _Recorder()
+    app = Application(
+        config_path=str(cfg),
+        bus=bus,
+        memory=memory,
+        providers={"fake": provider},
+    )
+    app.set_provider(provider)
+
+    # Drive both messages through the bus at the same time.
+    msg_user = Message(
+        session_id="s1",
+        platform="cli",
+        chat_id="c1",
+        user_id="u1",
+        content="你好",
+        role="user",
+    )
+    msg_scheduler = Message(
+        session_id="s1",
+        platform="cli",
+        chat_id="c1",
+        user_id="u1",
+        content="介绍定时任务",
+        role="user",
+        raw={"trigger": "scheduler", "schedule_id": "abc"},
+    )
+
+    await _asyncio.gather(
+        bus.emit("message_received", msg_user),
+        bus.emit("message_received", msg_scheduler),
+    )
+
+    # Two LLM calls should have been made (one per inbound message).
+    assert len(seen) == 2
+
+    def _has(msgs, role: str, content_substr: str) -> bool:
+        return any(
+            m.get("role") == role and content_substr in (m.get("content") or "")
+            for m in msgs
+        )
+
+    # Without the per-session lock, both concurrent calls would observe
+    # the same half-baked context (both inbound messages but neither
+    # reply) and the LLM would mix them together. With the lock, the
+    # two calls happen in series:
+    #
+    #   1. The first call to grab the lock sees only its own inbound
+    #      message in the session, never the other one.
+    #   2. After it finishes and writes its reply, the second call
+    #      runs and sees the first call's full transcript (inbound +
+    #      outbound) plus its own inbound message.
+    #
+    # So we expect exactly one of the two calls to see BOTH the user
+    # message and the scheduler prompt — never both seeing both
+    # (which would mean the lock didn't fire). The "second" call is
+    # the one that sees both; the "first" only sees its own inbound.
+
+    saw_user_only = -1  # only "你好", not the scheduler prompt
+    saw_both = -1       # both "你好" and "介绍定时任务"
+    for i, msgs in enumerate(seen):
+        if _has(msgs, "user", "你好") and not _has(msgs, "user", "介绍定时任务"):
+            saw_user_only = i
+        if _has(msgs, "user", "你好") and _has(msgs, "user", "介绍定时任务"):
+            saw_both = i
+
+    assert saw_user_only >= 0, (
+        f"expected one LLM call to see only the user message (the "
+        f"first to acquire the lock); seen contexts: {seen}"
+    )
+    assert saw_both >= 0, (
+        f"expected one LLM call to see both inbound messages (the "
+        f"second to acquire the lock, after the first wrote its "
+        f"reply); seen contexts: {seen}"
+    )
+
+    # The "second" call's context must include the first call's reply.
+    # Identify which inbound message the first call processed.
+    first_call_msgs = seen[saw_user_only]
+    other_call_msgs = seen[saw_both]
+
+    if _has(first_call_msgs, "user", "你好"):
+        first_inbound = "你好"
+    else:
+        first_inbound = "介绍定时任务"
+    expected_reply = f"reply:{first_inbound}"
+    assert _has(other_call_msgs, "assistant", expected_reply), (
+        f"second call should see first call's reply {expected_reply!r}; "
+        f"got: {other_call_msgs}"
+    )
