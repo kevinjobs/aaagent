@@ -89,11 +89,15 @@ async def test_run_shell_blocks_cat_into_protected_path():
 
 
 @pytest.mark.asyncio
-async def test_run_shell_allows_unrelated_targets():
+async def test_run_shell_allows_unrelated_targets(tmp_path):
     """Without protected_patterns or with non-matching ones, the
-    command runs through to the deny rules and then the executor."""
+    command runs through to the deny rules and then the executor.
+
+    The redirect goes to temp-dir path so it cannot clobber any file
+    in the repo working tree.
+    """
     out = await run_shell(
-        {"command": "echo done > result.txt"},
+        {"command": f"echo done > {tmp_path / 'result.txt'}"},
         protected_patterns=["config.yaml", ".env"],
     )
     # The command was NOT blocked by the protected-paths gate.
@@ -102,6 +106,7 @@ async def test_run_shell_allows_unrelated_targets():
     # the gate fired.)
     assert "protected" not in out.lower()
     assert "blocked" not in out.lower()
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8").strip() == "done"
 
 
 @pytest.mark.asyncio
@@ -114,10 +119,16 @@ async def test_run_shell_protected_paths_glob():
 
 
 @pytest.mark.asyncio
-async def test_run_shell_no_protected_patterns_no_op():
-    """When protected_patterns is None/empty, behaviour is unchanged."""
+async def test_run_shell_no_protected_patterns_no_op(tmp_path):
+    """When protected_patterns is None/empty, behaviour is unchanged.
+
+    The redirect target is an absolute path under a temp dir — never
+    the repo's real config.yaml (a bare `echo > config.yaml` would
+    run in the test process CWD and clobber the developer's file).
+    """
     out = await run_shell(
-        {"command": "echo a > config.yaml"},
+        {"command": f"echo a > {tmp_path / 'target.txt'}"},
         protected_patterns=None,
     )
     assert "protected" not in out.lower()
+    assert (tmp_path / "target.txt").read_text(encoding="utf-8").strip() == "a"
