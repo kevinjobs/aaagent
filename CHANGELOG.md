@@ -2,6 +2,18 @@
 
 ## 0.3.1 - Unreleased
 
+### Web tools
+- New `aaagent-plugin-websearch`: provides `web_search` via a pluggable
+  `Backend` ABC; ships with `TavilyBackend` (default), requires
+  `TAVILY_API_KEY`. Returns a numbered `[i] title — url\nsnippet` list.
+  Supports `top_k`, `recency_days`, `include_answer`.
+- New `aaagent-plugin-webscrape`: provides `fetch_url` via httpx +
+  trafilatura. Returns main content as `markdown` (default) / `text` /
+  `html` with `timeout`, `max_bytes`, `max_chars` caps. JS-heavy pages
+  fall back to title + first paragraph + link list.
+- Both registered as workspace members; config snippets in `README.md`
+  and `config.yaml`; `TAVILY_API_KEY` documented in `.env.example`.
+
 ### Memory & Retrieval
 - `MemoryStore.recall` accepts an optional `tags` filter
 - **markdownstore**: fact lines are parsed structurally and ranked by

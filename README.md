@@ -80,6 +80,18 @@ uv pip install aaagent-plugin-mcp
 
 Configure `mcp.servers` in `config.yaml` (see [Configuration](#mcp)).
 
+### Adding web search / fetch
+
+```bash
+uv pip install aaagent-plugin-websearch aaagent-plugin-webscrape
+```
+
+- **websearch** (Tavily backend by default): provides `web_search`; needs
+  `TAVILY_API_KEY` from <https://tavily.com> (free tier 1000 req/month).
+- **webscrape**: provides `fetch_url` — fetches a URL and returns its main
+  content as clean Markdown / text / HTML using httpx + trafilatura. JS-heavy
+  pages fall back to title + first paragraph + link list. No API key required.
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your API keys:
@@ -196,6 +208,16 @@ tools:
     max_output: 4096
   memory:
     enabled: true
+  websearch:
+    enabled: true
+    backend: tavily
+    api_key: "${TAVILY_API_KEY}"
+    max_results: 5
+    timeout: 15
+  webscrape:
+    enabled: true
+    timeout: 20
+    max_bytes: 5000000
 ```
 
 - `file` (aaagent-plugin-filetools): `read_file`, `write_file`,
@@ -203,6 +225,10 @@ tools:
 - `shell` (aaagent-plugin-shelltools): `run_shell` with a safety policy
 - `memory` (aaagent-plugin-memorytools): `remember`, `recall` operating
   on the configured `MemoryStore`
+- `websearch` (aaagent-plugin-websearch): `web_search` using a pluggable
+  backend (Tavily by default); needs `TAVILY_API_KEY`
+- `webscrape` (aaagent-plugin-webscrape): `fetch_url` returning Markdown /
+  text / HTML via httpx + trafilatura, with `timeout` and `max_bytes` caps
 
 #### Shell safety policy
 
@@ -362,6 +388,8 @@ logging.
 | `aaagent-plugin-feishu` | Feishu WebSocket adapter | `FeishuAdapter` |
 | `aaagent-plugin-inmemorysession` | In-memory session store | `InMemorySessionFactory` |
 | `aaagent-plugin-markdownstore` | Markdown memory store | `MarkdownMemoryStoreFactory` |
+| `aaagent-plugin-websearch` | Web search (Tavily backend) | `WebSearchToolsPlugin` |
+| `aaagent-plugin-webscrape` | URL fetch + extract (httpx + trafilatura) | `WebScrapeToolsPlugin` |
 
 To author a new plugin, see
 [docs/plugin-authoring.md](docs/plugin-authoring.md).

@@ -38,6 +38,8 @@ members = [
     "plugins/aaagent-plugin-feishu",
     "plugins/aaagent-plugin-inmemorysession",
     "plugins/aaagent-plugin-markdownstore",
+    "plugins/aaagent-plugin-websearch",
+    "plugins/aaagent-plugin-webscrape",
 ]
 
 [tool.uv.sources]
@@ -51,6 +53,8 @@ aaagent-plugin-cliadapter = { workspace = true }
 aaagent-plugin-feishu = { workspace = true }
 aaagent-plugin-inmemorysession = { workspace = true }
 aaagent-plugin-markdownstore = { workspace = true }
+aaagent-plugin-websearch = { workspace = true }
+aaagent-plugin-webscrape = { workspace = true }
 
 [tool.ruff]
 line-length = 100
